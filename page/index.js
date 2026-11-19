@@ -1,9 +1,11 @@
 import * as ui from '@zos/ui'
+import { getPackageInfo } from '@zos/app'
 import { Barometer } from '@zos/sensor'
-import { GESTURE_RIGHT, KEY_BACK, KEY_EVENT_CLICK, onGesture, onKey, offGesture, offKey } from '@zos/interaction'
+import { GESTURE_DOWN, GESTURE_RIGHT, GESTURE_UP, KEY_BACK, KEY_EVENT_CLICK, onGesture, onKey, offGesture, offKey } from '@zos/interaction'
 import { formatPeriod, formatPressure, formatTrend, MINUTE, PERIODS, pressureChange, trimHistory, UNITS } from '../lib/pressure.js'
+import { CHART_PERIODS, makeChart } from '../lib/chart.js'
 import { BACKGROUND, FOREGROUND, readHistory, readPressure, recordSample } from '../lib/history.js'
-import { COLORS, readSettings, saveSettings } from '../lib/watch-data.js'
+import { CHART_COLORS, COLORS, readSettings, saveSettings } from '../lib/watch-data.js'
 import { setBackgroundSampling } from '../lib/sampling.js'
 import { STRINGS } from '../lib/strings.js'
 
@@ -11,27 +13,46 @@ const PALETTES = {
   dark: {
     background: 0x000000, surface: 0x223039, pressed: 0x344653, outline: 0x304148,
     text: 0xeaf3f8, muted: 0xa1b4c1,
-    auto: 0xeaf3f8, blue: 0x73b9ef, mint: 0x78decf, gold: 0xffd686, orange: 0xffaa68, violet: 0xb3a0ef,
+    auto: 0xeaf3f8, blue: 0x366bc6, mint: 0x78decf, gold: 0xffd686, orange: 0xf68b3d, violet: 0x8660d9,
+    red: 0xff6a70, green: 0x57cb84,
   },
   light: {
     background: 0xd6dddf, surface: 0xbdc9ce, pressed: 0xaebec4, outline: 0x9aaeb5,
     text: 0x16282f, muted: 0x435b66,
-    auto: 0x16282f, blue: 0x124f8b, mint: 0x106d5b, gold: 0x825500, orange: 0x914700, violet: 0x573b94,
+    auto: 0x16282f, blue: 0x123673, mint: 0x106d5b, gold: 0x825500, orange: 0x8c3e00, violet: 0x4a288a,
+    red: 0xa92530, green: 0x21663a,
   },
 }
 
 const LOG_PAGE_SIZE = 4
+const TELEGRAM_CHANNEL = 't.me/bytenenras'
+const MENU_ROW_HEIGHT = 74
+const PARENTS = {
+  settings: 'main', graph: 'main', colors: 'appearance', theme: 'appearance', period: 'trend',
+  chartPeriod: 'chartSettings', chartColors: 'chartSettings',
+}
+
+const twoDigits = value => ('0' + value).slice(-2)
+
+function formatTime(time) {
+  const date = new Date(time)
+  return twoDigits(date.getHours()) + ':' + twoDigits(date.getMinutes())
+}
 
 function formatLogDate(time) {
   const date = new Date(time)
-  const twoDigits = value => ('0' + value).slice(-2)
   return date.getFullYear() + '-' + twoDigits(date.getMonth() + 1) + '-' + twoDigits(date.getDate())
-    + '  ' + twoDigits(date.getHours()) + ':' + twoDigits(date.getMinutes())
+    + '  ' + formatTime(time)
 }
 
 Page({
   build() {
     this.settings = readSettings()
+    this.hintVisible = !this.settings.swipeHintSeen
+    if (this.hintVisible) {
+      this.settings.swipeHintSeen = true
+      saveSettings(this.settings)
+    }
     this.widgets = []
     this.reading = null
     this.backgroundStatus = null
@@ -48,7 +69,7 @@ Page({
     this.measure()
     this.render()
     this.timer = setInterval(() => this.measure(), 5000)
-    onGesture({ callback: event => event === GESTURE_RIGHT && this.goBack() })
+    onGesture({ callback: event => this.handleGesture(event) })
     onKey({ callback: (key, event) => key === KEY_BACK && event === KEY_EVENT_CLICK && this.goBack() })
   },
 
@@ -65,14 +86,18 @@ Page({
   measure() {
     this.now = Date.now()
     this.pressure = readPressure(this.barometer)
-    if (this.hasTrends()) {
-      this.foregroundHistory = recordSample(FOREGROUND, this.foregroundHistory, this.now, this.pressure)
+    const previous = this.foregroundHistory
+    this.foregroundHistory = recordSample(FOREGROUND, previous, this.now, this.pressure)
+    if (this.hasTrends() || this.screen === 'graph') {
       if (this.now < this.historyReadAt || this.now - this.historyReadAt >= MINUTE / 2) {
         this.backgroundHistory = readHistory(BACKGROUND)
         this.historyReadAt = this.now
       }
     }
     if (this.screen === 'main' && this.reading) this.updateReadings()
+    if (this.screen === 'graph' && (previous !== this.foregroundHistory || Math.floor(this.now / MINUTE) !== this.chartRenderedMinute)) {
+      this.render()
+    }
     if (this.screen === 'trend' && this.backgroundStatus) {
       this.backgroundStatus.setProperty(ui.prop.TEXT, this.backgroundStatusText())
     }
@@ -83,10 +108,20 @@ Page({
     this.render()
   },
 
+  handleGesture(event) {
+    if (event === GESTURE_UP && this.screen === 'main') {
+      this.hintVisible = false
+      this.backgroundHistory = readHistory(BACKGROUND)
+      this.open('graph')
+      return true
+    }
+    if (event === GESTURE_DOWN && this.screen === 'graph') return this.goBack()
+    return event === GESTURE_RIGHT && this.goBack()
+  },
+
   goBack() {
     if (this.screen === 'main') return false
-    const parents = { colors: 'appearance', period: 'trend', settings: 'main' }
-    this.open(parents[this.screen] || 'settings')
+    this.open(PARENTS[this.screen] || 'settings')
     return true
   },
 
@@ -134,13 +169,36 @@ Page({
     })
   },
 
-  title(title) {
-    this.text(title, 70, 55, 340, 51, 30)
+  menuText(text, x, y, w, h, size, color, align = ui.align.LEFT, wrap = false) {
+    return this.menu.createWidget(ui.widget.TEXT, {
+      x, y, w, h, text, color, text_size: size, align_h: align, align_v: ui.align.CENTER_V,
+      text_style: wrap ? ui.text_style.WRAP : ui.text_style.NONE,
+    })
   },
 
-  rows(items, y, rowGap = 58, height = 50) {
-    items.forEach(({ label, action, color }, index) => {
-      this.button(label, 76, y + index * rowGap, 328, height, action, { color })
+  menuList(title, items) {
+    this.text(title, 65, 52, 350, 45, 31)
+    items.forEach(({ label, action, detail, selected, color, icon }, index) => {
+      const y = index * MENU_ROW_HEIGHT
+      this.menu.createWidget(ui.widget.BUTTON, {
+        x: 65, y, w: 350, h: MENU_ROW_HEIGHT, text: '',
+        normal_color: this.palette.background, press_color: this.palette.surface, click_func: action,
+      })
+      let inset = 84
+      if (icon) {
+        this.menu.createWidget(ui.widget.IMG, {
+          x: 72, y: y + 19, src: 'menu-' + icon + '-' + this.settings.theme + '.png',
+        })
+        inset = 111
+      } else if (color !== undefined) {
+        this.menu.createWidget(ui.widget.FILL_RECT, { x: 82, y: y + 28, w: 15, h: 15, radius: 7, color })
+        inset = 108
+      }
+      this.menuText(label, inset, y + (detail ? 6 : 0), 370 - inset,
+        detail ? 36 : MENU_ROW_HEIGHT, icon ? 29 : 31, this.palette.text)
+      if (detail) this.menuText(detail, inset, y + 42, 370 - inset, 23, 19, this.palette.muted)
+      this.menuText(selected ? '✓' : selected === false ? '' : '›', 369, y, 34, MENU_ROW_HEIGHT,
+        25, selected ? this.palette.mint : this.palette.muted, ui.align.CENTER_H)
     })
   },
 
@@ -152,6 +210,8 @@ Page({
     this.strings = STRINGS[this.settings.language]
     this.accent = this.palette[this.settings.color]
     this.fill(0, 0, 480, 480, this.palette.background)
+    const menuScreen = this.screen !== 'main' && this.screen !== 'graph'
+    this.menu = menuScreen ? this.add(ui.widget.VIEW_CONTAINER, { x: 0, y: 104, w: 480, h: 287, scroll_enable: 1 }) : null
 
     switch (this.screen) {
       case 'main': this.renderMain(); break
@@ -163,10 +223,21 @@ Page({
       case 'trend': this.renderTrend(); break
       case 'period': this.renderPeriod(); break
       case 'log': this.renderLog(); break
+      case 'graph': this.renderGraph(); break
+      case 'theme': this.renderTheme(); break
+      case 'chartSettings': this.renderChartSettings(); break
+      case 'chartPeriod': this.renderChartPeriod(); break
+      case 'chartColors': this.renderChartColors(); break
+      case 'help': this.renderHelp(); break
+      case 'about': this.renderAbout(); break
     }
 
-    if (this.screen !== 'main') {
-      this.button('‹', 199, 401, 82, 48, () => this.goBack(), { size: 36, radius: 24 })
+    if (menuScreen) {
+      this.add(ui.widget.BUTTON, {
+        x: 194, y: 399, w: 92, h: 53, text: '‹', text_size: 38,
+        normal_color: this.palette.background, press_color: this.palette.surface,
+        color: this.palette.text, click_func: () => this.goBack(),
+      })
     }
   },
 
@@ -192,11 +263,17 @@ Page({
     })
     const settingsIcon = 'settings-' + this.settings.theme
     this.add(ui.widget.BUTTON, {
-      x: 194, y: 398, w: 92, h: 56, text: '',
+      x: 194, y: this.hintVisible ? 410 : 398, w: 92, h: 56, text: '',
       normal_src: settingsIcon + '.png',
       press_src: settingsIcon + '-pressed.png',
       click_func: () => this.open('settings'),
     })
+    if (this.hintVisible) {
+      this.button('↑  ' + this.strings.swipeHint + '   ×', 89, 371, 302, 38, () => {
+        this.hintVisible = false
+        this.render()
+      }, { size: 18, color: this.palette.text })
+    }
     this.updateReadings()
   },
 
@@ -216,21 +293,25 @@ Page({
 
   renderSettings() {
     const t = this.strings
-    this.title(t.settings)
-    this.rows([
-      { label: t.units + ' · ' + UNITS[this.settings.unit][this.settings.language], action: () => this.open('units') },
-      { label: t.appearance, action: () => this.open('appearance') },
-      { label: t.language, action: () => this.open('language') },
-      ...this.settings.trends.map((trend, index) => ({
-        label: t.trend + ' ' + (index + 1) + ' · ' + (trend.enabled
-          ? formatPeriod(trend.minutes, this.settings.language) : t.off),
+    const { language, unit, trends } = this.settings
+    this.menuList(t.settings, [
+      { label: t.units, icon: 'units', detail: UNITS[unit][language], action: () => this.open('units') },
+      { label: t.appearance, icon: 'appearance', action: () => this.open('appearance') },
+      { label: t.language, icon: 'language', detail: language === 'ru' ? 'Русский' : 'English', action: () => this.open('language') },
+      ...trends.map((trend, index) => ({
+        label: t.trend + ' ' + (index + 1),
+        icon: 'trend-' + (index + 1),
+        detail: trend.enabled ? formatPeriod(trend.minutes, language) : t.off,
         action: () => {
           this.trendIndex = index
           this.open('trend')
         },
       })),
-      { label: t.log, action: () => this.openLog() },
-    ], 107, 47, 42)
+      { label: t.chart, icon: 'chart', action: () => this.open('chartSettings') },
+      { label: t.log, icon: 'log', action: () => this.openLog() },
+      { label: t.help, icon: 'help', action: () => this.open('help') },
+      { label: t.about, icon: 'about', action: () => this.open('about') },
+    ])
   },
 
   openLog() {
@@ -247,106 +328,104 @@ Page({
   renderLog() {
     const t = this.strings
     const { unit, language, showTenths } = this.settings
-    this.text(t.log, 72, 45, 336, 44, 29)
+    this.text(t.log, 70, 48, 340, 42, 30)
     const latestBackground = this.logEntries.find(entry => entry.background)
-    this.text(t.logLastBackground, 72, 91, 336, 25, 18, this.palette.muted)
-    this.text(latestBackground ? formatLogDate(latestBackground.time) : '—', 72, 116, 336, 25, 19, this.accent)
+    this.menuText(t.logLastBackground, 84, 0, 312, 24, 19, this.palette.muted)
+    this.menuText(latestBackground ? formatLogDate(latestBackground.time) : '—',
+      84, 25, 312, 28, 22, this.accent)
     if (!this.logEntries.length) {
-      this.text(t.logEmpty, 62, 198, 356, 55, 22, this.palette.muted)
+      this.menuText(t.logEmpty, 84, 83, 310, 100, 26, this.palette.text, ui.align.LEFT, true)
       return
     }
     const start = this.logPage * LOG_PAGE_SIZE
     this.logEntries.slice(start, start + LOG_PAGE_SIZE).forEach((entry, index) => {
-      const y = 146 + 53 * index
-      this.fill(71, y, 338, 49, this.palette.surface, 13)
+      const y = 60 + 54 * index
       const reading = formatPressure(entry.pressure, unit, showTenths) + ' ' + UNITS[unit][language]
-      const source = entry.background ? t.logBackground : t.logForeground
-      this.text(formatLogDate(entry.time), 74, y, 332, 24, 18, this.palette.muted)
-      this.text(reading + ' · ' + source, 74, y + 23, 332, 24, 19, this.palette.text)
+      const hint = entry.background ? t.logBackground : t.logForeground
+      this.menuText(reading, 84, y, 310, 30, 24, this.palette.text)
+      this.menuText(formatLogDate(entry.time) + '  ·  ' + hint, 84, y + 28, 320, 25, 16, this.palette.muted)
     })
     const pages = Math.ceil(this.logEntries.length / LOG_PAGE_SIZE)
-    if (pages === 1) return
-    this.text((this.logPage + 1) + ' / ' + pages, 200, 357, 80, 38, 20, this.palette.muted)
+    if (pages <= 1) return
+    this.text((this.logPage + 1) + ' / ' + pages, 180, 90, 120, 22, 16, this.palette.muted)
     if (this.logPage > 0) {
-      this.button('‹', 107, 354, 66, 44, () => { this.logPage--; this.render() }, { size: 30 })
+      this.add(ui.widget.BUTTON, {
+        x: 124, y: 399, w: 64, h: 48, text: '‹', text_size: 30, color: this.palette.text,
+        normal_color: this.palette.background, press_color: this.palette.surface,
+        click_func: () => { this.logPage--; this.render() },
+      })
     }
     if (this.logPage + 1 < pages) {
-      this.button('›', 307, 354, 66, 44, () => { this.logPage++; this.render() }, { size: 30 })
+      this.add(ui.widget.BUTTON, {
+        x: 292, y: 399, w: 64, h: 48, text: '›', text_size: 30, color: this.palette.text,
+        normal_color: this.palette.background, press_color: this.palette.surface,
+        click_func: () => { this.logPage++; this.render() },
+      })
     }
   },
 
   renderUnits() {
-    this.title(this.strings.units)
-    Object.keys(UNITS).forEach((unit, index) => {
-      const row = Math.floor(index / 2)
-      const x = 75 + (index % 2) * 168
-      this.button(UNITS[unit][this.settings.language], x, 123 + row * 76, 162, 63,
-        () => this.pick('unit', unit), { color: this.settings.unit === unit ? this.accentForSelection() : this.palette.text, size: 22 })
-    })
+    const { language, unit } = this.settings
+    this.menuList(this.strings.units, Object.keys(UNITS).map(key => ({
+      label: UNITS[key][language], selected: key === unit, action: () => this.pick('unit', key),
+    })))
   },
 
   renderLanguage() {
-    this.title(this.strings.language)
-    this.rows([
-      { label: 'Русский', action: () => this.pick('language', 'ru'), color: this.optionColor('language', 'ru') },
-      { label: 'English', action: () => this.pick('language', 'en'), color: this.optionColor('language', 'en') },
-    ], 157, 69)
+    const { language } = this.settings
+    this.menuList(this.strings.language, [
+      { label: 'Русский', selected: language === 'ru', action: () => this.pick('language', 'ru') },
+      { label: 'English', selected: language === 'en', action: () => this.pick('language', 'en') },
+    ])
   },
 
   renderAppearance() {
     const t = this.strings
-    const { theme, color, showTenths, unit } = this.settings
-    this.title(t.appearance)
-    this.rows([
-      { label: t.theme + ' · ' + t[theme], action: () => {
-        this.settings.theme = theme === 'dark' ? 'light' : 'dark'
-        saveSettings(this.settings)
-        this.render()
-      } },
-      { label: t.color + ' · ' + t[color], action: () => this.open('colors'), color: this.accent },
-      { label: t.tenths + ' · ' + (showTenths ? t.on : t.off), action: () => {
+    const { theme, color, showTenths } = this.settings
+    this.menuList(t.appearance, [
+      { label: t.theme, detail: t[theme], action: () => this.open('theme') },
+      { label: t.color, detail: t[color], action: () => this.open('colors') },
+      { label: t.tenths, detail: showTenths ? t.on : t.off, action: () => {
         this.settings.showTenths = !showTenths
         saveSettings(this.settings)
         this.render()
       } },
-    ], 120, 62)
-    this.text(formatPressure(this.pressure, unit, showTenths), 90, 310, 300, 70, 48, this.accent)
+    ])
+  },
+
+  renderTheme() {
+    this.menuList(this.strings.theme, ['dark', 'light'].map(theme => ({
+      label: this.strings[theme], selected: theme === this.settings.theme, action: () => this.pick('theme', theme),
+    })))
   },
 
   renderColors() {
-    this.title(this.strings.color)
-    COLORS.forEach((color, index) => {
-      const x = 75 + (index % 2) * 168
-      const label = (this.settings.color === color ? '• ' : '') + this.strings[color]
-      this.button(label, x, 123 + Math.floor(index / 2) * 76, 162, 63, () => {
-        this.settings.color = color
-        saveSettings(this.settings)
-        this.open('appearance')
-      }, { color: this.palette[color], size: 22 })
-    })
+    this.renderColorList(this.strings.color, 'color', COLORS)
   },
 
-  accentForSelection() {
-    return this.palette.mint
+  renderChartColors() {
+    this.renderColorList(this.strings.chartColor, 'chartColor', CHART_COLORS)
   },
 
-  optionColor(field, value) {
-    return this.settings[field] === value ? this.accentForSelection() : this.palette.text
+  renderColorList(title, field, colors) {
+    this.menuList(title, colors.map(color => ({
+      label: this.strings[color],
+      color: this.palette[color],
+      selected: color === this.settings[field],
+      action: () => this.pick(field, color),
+    })))
   },
 
   renderTrend() {
     const t = this.strings
     const trend = this.settings.trends[this.trendIndex]
-    this.title(t.trend + ' ' + (this.trendIndex + 1))
-    this.rows([
-      { label: trend.enabled ? t.on : t.off, action: () => this.editTrend('enabled', !trend.enabled),
-        color: trend.enabled ? this.accentForSelection() : this.palette.text },
-      { label: t.period + ' · ' + formatPeriod(trend.minutes, this.settings.language), action: () => this.open('period') },
-      { label: t.format + ' · ' + t[trend.mode], action: () => this.editTrend('mode', trend.mode === 'arrow' ? 'sign' : 'arrow') },
-    ], 129, 62)
-    const demo = trend.mode === 'arrow' ? '↑ 3       ↓ 2' : '+3       −2'
-    this.text(demo, 102, 319, 276, 49, 29, this.accent)
-    this.backgroundStatus = this.text(this.backgroundStatusText(), 60, 365, 360, 26, 18, this.palette.muted)
+    this.menuList(t.trend + ' ' + (this.trendIndex + 1), [
+      { label: t.trend, detail: trend.enabled ? t.on : t.off, action: () => this.editTrend('enabled', !trend.enabled) },
+      { label: t.period, detail: formatPeriod(trend.minutes, this.settings.language), action: () => this.open('period') },
+      { label: t.format, detail: t[trend.mode], action: () => this.editTrend('mode', trend.mode === 'arrow' ? 'sign' : 'arrow') },
+    ])
+    this.backgroundStatus = this.menuText(this.backgroundStatusText(), 84, 225, 310, 56, 17,
+      this.palette.muted, ui.align.LEFT, true)
   },
 
   backgroundStatusText() {
@@ -360,14 +439,93 @@ Page({
   },
 
   renderPeriod() {
-    this.title(this.strings.period)
-    const trend = this.settings.trends[this.trendIndex]
-    PERIODS.forEach((minutes, index) => {
-      const x = 75 + (index % 2) * 168
-      this.button(formatPeriod(minutes, this.settings.language), x, 111 + Math.floor(index / 2) * 67, 162, 56, () => {
+    const { minutes: current } = this.settings.trends[this.trendIndex]
+    this.menuList(this.strings.period, PERIODS.map(minutes => ({
+      label: formatPeriod(minutes, this.settings.language), selected: minutes === current,
+      action: () => {
         this.screen = 'trend'
         this.editTrend('minutes', minutes)
-      }, { color: trend.minutes === minutes ? this.accentForSelection() : this.palette.text })
-    })
+      },
+    })))
+  },
+
+  renderChartSettings() {
+    const { chartMinutes, chartColor, language } = this.settings
+    const t = this.strings
+    this.menuList(t.chart, [
+      { label: t.period, detail: formatPeriod(chartMinutes, language), action: () => this.open('chartPeriod') },
+      { label: t.chartColor, detail: t[chartColor], action: () => this.open('chartColors') },
+    ])
+  },
+
+  renderChartPeriod() {
+    this.menuList(this.strings.period, CHART_PERIODS.map(minutes => ({
+      label: formatPeriod(minutes, this.settings.language),
+      selected: minutes === this.settings.chartMinutes,
+      action: () => this.pick('chartMinutes', minutes),
+    })))
+  },
+
+  renderHelp() {
+    const t = this.strings
+    this.text(t.help, 57, 51, 366, 45, 30)
+    this.menuText(t.helpChart, 78, 12, 324, 162, 26, this.palette.text, ui.align.LEFT, true)
+    this.menuText(t.helpTrends, 78, 184, 324, 201, 26, this.palette.text, ui.align.LEFT, true)
+  },
+
+  renderAbout() {
+    const t = this.strings
+    const info = getPackageInfo()
+    const version = info?.version?.name || info?.app?.version?.name
+      || (typeof info?.version === 'string' ? info.version : '1.1.0')
+    this.text(t.about, 66, 51, 348, 45, 31)
+    this.menuText(t.appName + '  ·  ' + t.version + ' ' + version,
+      80, 0, 320, 28, 21, this.palette.muted, ui.align.CENTER_H)
+    this.menuText(TELEGRAM_CHANNEL, 80, 29, 320, 28, 22, this.palette.text, ui.align.CENTER_H)
+    this.menu.createWidget(ui.widget.IMG, { x: 128, y: 62, src: 'telegram-qr.png' })
+  },
+
+  renderGraph() {
+    const { chartMinutes, chartColor, language, unit, showTenths } = this.settings
+    const now = this.now
+    this.chartRenderedMinute = Math.floor(now / MINUTE)
+    this.text(this.strings.chart + ' · ' + formatPeriod(chartMinutes, language), 66, 49, 348, 44, 28)
+    const chart = makeChart(this.foregroundHistory.concat(this.backgroundHistory), now, chartMinutes, unit)
+    if (!chart.points.length) {
+      this.text(this.strings.chartEmpty, 75, 205, 330, 70, 27, this.palette.muted)
+      return
+    }
+
+    const color = this.palette[chartColor]
+    const latest = chart.points[chart.points.length - 1]
+    const lastReading = formatPressure(latest.pressure, unit, showTenths) + ' ' + UNITS[unit][language]
+    this.text(lastReading + '  ·  ' + formatTime(latest.time), 66, 95, 348, 32, 21, this.palette.text)
+    const canvas = this.add(ui.widget.CANVAS, { x: 126, y: 139, w: 260, h: 186 })
+    const pad = 7
+    const width = 245
+    const height = 171
+    canvas.setPaint({ color: this.palette.outline, line_width: 1 })
+    const tickDigits = Math.max(UNITS[unit].digits, 1)
+    for (const fraction of [0, 0.5, 1]) {
+      const y = pad + Math.round(fraction * height)
+      canvas.drawLine({ x1: pad, y1: y, x2: pad + width, y2: y, color: this.palette.outline })
+      const value = chart.top - fraction * (chart.top - chart.bottom)
+      this.text(value.toFixed(tickDigits), 52, 139 + y - 12, 72, 24, 16, this.palette.muted)
+      const time = chart.start + fraction * (now - chart.start)
+      const x = 133 + Math.round(fraction * width)
+      this.text(formatTime(time), x - 31, 333, 62, 25, 16, this.palette.muted)
+    }
+
+    canvas.setPaint({ color, line_width: 2 })
+    let previous
+    for (const point of chart.points) {
+      const x = pad + Math.round(point.x * width)
+      const y = pad + Math.round(point.y * height)
+      if (point.connect && previous) {
+        canvas.drawLine({ x1: previous.x, y1: previous.y, x2: x, y2: y, color })
+      }
+      canvas.drawCircle({ center_x: x, center_y: y, radius: point === latest ? 5 : 2, color })
+      previous = { x, y }
+    }
   },
 })
