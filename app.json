@@ -4,7 +4,7 @@
     "appId": 3198607,
     "appName": "Barometer",
     "appType": "app",
-    "version": { "code": 6, "name": "1.1.1" },
+    "version": { "code": 7, "name": "1.1.2" },
     "icon": "icon.png",
     "vender": "Balance Barometer",
     "description": "Atmospheric pressure and trends"

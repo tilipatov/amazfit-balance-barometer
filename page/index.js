@@ -1,9 +1,10 @@
 import * as ui from '@zos/ui'
 import { getPackageInfo } from '@zos/app'
 import { Barometer } from '@zos/sensor'
-import { GESTURE_DOWN, GESTURE_RIGHT, GESTURE_UP, KEY_BACK, KEY_EVENT_CLICK, onGesture, onKey, offGesture, offKey } from '@zos/interaction'
+import { GESTURE_DOWN, GESTURE_RIGHT, GESTURE_UP, KEY_BACK, KEY_EVENT_CLICK, KEY_HOME,
+  onDigitalCrown, onGesture, onKey, offDigitalCrown, offGesture, offKey } from '@zos/interaction'
 import { formatPeriod, formatPressure, formatTrend, MINUTE, PERIODS, pressureChange, trimHistory, UNITS } from '../lib/pressure.js'
-import { CHART_PERIODS, makeChart } from '../lib/chart.js'
+import { CHART_PERIODS, chartTimeTicks, makeChart } from '../lib/chart.js'
 import { BACKGROUND, FOREGROUND, readHistory, readPressure, recordSample } from '../lib/history.js'
 import { CHART_COLORS, COLORS, readSettings, saveSettings } from '../lib/watch-data.js'
 import { setBackgroundSampling } from '../lib/sampling.js'
@@ -30,6 +31,7 @@ const SCREEN_SIZE = 480
 const MENU_TOP = 104
 const MENU_HEIGHT = 287
 const MENU_ROW_HEIGHT = 96
+const CROWN_SCROLL_TIMEOUT = 800
 const PARENTS = {
   settings: 'main', graph: 'main', colors: 'appearance', theme: 'appearance', period: 'trend',
   chartPeriod: 'chartSettings', chartColors: 'chartSettings',
@@ -81,10 +83,16 @@ Page({
     this.timer = setInterval(() => this.measure(), 5000)
     onGesture({ callback: event => this.handleGesture(event) })
     onKey({ callback: (key, event) => key === KEY_BACK && event === KEY_EVENT_CLICK && this.goBack() })
+    onDigitalCrown({ callback: key => {
+      if (key === KEY_HOME && this.menuRows.length) this.trackCrownScroll()
+      return false
+    } })
   },
 
   onDestroy() {
     clearInterval(this.timer)
+    this.stopCrownTracking()
+    offDigitalCrown()
     offGesture()
     offKey()
   },
@@ -211,7 +219,15 @@ Page({
       })
       this.menuRows.push({ y, decoration, icon, color, labelWidget, detailWidget, indicator })
     })
-    this.layoutMenuRows(0)
+    this.updateMenuOffset(0)
+  },
+
+  updateMenuOffset(value) {
+    if (!Number.isFinite(value)) return
+    const offset = Math.abs(value)
+    if (offset === this.menuOffset) return
+    this.menuOffset = offset
+    this.layoutMenuRows(offset)
   },
 
   layoutMenuRows(offset) {
@@ -236,10 +252,34 @@ Page({
     }
   },
 
+  trackCrownScroll() {
+    this.crownScrollDeadline = Date.now() + CROWN_SCROLL_TIMEOUT
+    if (this.crownTracker !== undefined) return
+    const menu = this.menu
+    // Some firmware scrolls the view with the crown without sending scroll_frame_func.
+    this.crownTracker = setInterval(() => {
+      if (this.menu !== menu) {
+        this.stopCrownTracking()
+        return
+      }
+      const offset = ui.prop.POS_Y === undefined ? undefined : menu.getProperty(ui.prop.POS_Y)
+      this.updateMenuOffset(Number.isFinite(offset) ? offset : menu.getProperty(ui.prop.MORE, {})?.pos_y)
+      if (Date.now() >= this.crownScrollDeadline) this.stopCrownTracking()
+    }, 32)
+  },
+
+  stopCrownTracking() {
+    if (this.crownTracker === undefined) return
+    clearInterval(this.crownTracker)
+    this.crownTracker = undefined
+  },
+
   render() {
+    this.stopCrownTracking()
     for (const control of this.widgets) ui.deleteWidget(control)
     this.widgets = []
     this.menuRows = []
+    this.menuOffset = undefined
     this.backgroundStatus = null
     this.palette = PALETTES[this.settings.theme]
     this.strings = STRINGS[this.settings.language]
@@ -251,9 +291,7 @@ Page({
       menu = this.add(ui.widget.VIEW_CONTAINER, {
         x: 0, y: MENU_TOP, w: SCREEN_SIZE, h: MENU_HEIGHT, scroll_enable: 1, bounce: 0,
         scroll_frame_func: info => {
-          if (menu && this.menu === menu && Number.isFinite(info?.yoffset)) {
-            this.layoutMenuRows(Math.abs(info.yoffset))
-          }
+          if (menu && this.menu === menu) this.updateMenuOffset(info?.yoffset)
         },
       })
     }
@@ -523,7 +561,7 @@ Page({
     const t = this.strings
     const info = getPackageInfo()
     const version = info?.version?.name || info?.app?.version?.name
-      || (typeof info?.version === 'string' ? info.version : '1.1.1')
+      || (typeof info?.version === 'string' ? info.version : '1.1.2')
     this.text(t.about, 66, 51, 348, 45, 31)
     this.menuText(t.appName + '  ·  ' + t.version + ' ' + version,
       80, 0, 320, 28, 21, this.palette.muted, ui.align.CENTER_H)
@@ -536,6 +574,7 @@ Page({
     const now = this.now
     this.chartRenderedMinute = Math.floor(now / MINUTE)
     this.text(this.strings.chart + ' · ' + formatPeriod(chartMinutes, language), 66, 49, 348, 44, 28)
+    this.text(this.strings.chartNow + ' ' + formatTime(now), 100, 377, 280, 42, 23, this.palette.text)
     const chart = makeChart(this.foregroundHistory.concat(this.backgroundHistory), now, chartMinutes, unit)
     if (!chart.points.length) {
       this.text(this.strings.chartEmpty, 75, 205, 330, 70, 27, this.palette.muted)
@@ -545,33 +584,43 @@ Page({
     const color = this.palette[chartColor]
     const latest = chart.points[chart.points.length - 1]
     const lastReading = formatPressure(latest.pressure, unit, showTenths) + ' ' + UNITS[unit][language]
-    this.text(lastReading + '  ·  ' + formatTime(latest.time), 66, 95, 348, 32, 21, this.palette.text)
-    const canvas = this.add(ui.widget.CANVAS, { x: 126, y: 139, w: 260, h: 186 })
-    const pad = 7
-    const width = 245
-    const height = 171
+    this.text(lastReading, 60, 94, 360, 54, 39, this.palette.text)
+    this.text(this.strings.chartLatest + ' ' + formatTime(latest.time), 60, 147, 360, 28, 18, this.palette.muted)
+    const plotX = 34
+    const plotY = 186
+    const pad = 4
+    const width = 362
+    const height = 136
+    const canvas = this.add(ui.widget.CANVAS, { x: plotX, y: plotY, w: width + 2 * pad + 1, h: height + 2 * pad + 1 })
     canvas.setPaint({ color: this.palette.outline, line_width: 1 })
     const tickDigits = Math.max(UNITS[unit].digits, 1)
     for (const fraction of [0, 0.5, 1]) {
       const y = pad + Math.round(fraction * height)
       canvas.drawLine({ x1: pad, y1: y, x2: pad + width, y2: y, color: this.palette.outline })
       const value = chart.top - fraction * (chart.top - chart.bottom)
-      this.text(value.toFixed(tickDigits), 52, 139 + y - 12, 72, 24, 16, this.palette.muted)
-      const time = chart.start + fraction * (now - chart.start)
-      const x = 133 + Math.round(fraction * width)
-      this.text(formatTime(time), x - 31, 333, 62, 25, 16, this.palette.muted)
+      this.text(value.toFixed(tickDigits), 404, plotY + y - 12, 60, 24, 16, this.palette.muted)
+    }
+    for (const time of chartTimeTicks(chart.start, now)) {
+      const x = pad + Math.round((time - chart.start) / (now - chart.start) * width)
+      canvas.drawLine({ x1: x, y1: pad, x2: x, y2: pad + height, color: this.palette.outline })
+      const labelX = Math.max(34, plotX + x - 31)
+      this.text(formatTime(time), labelX, 334, 62, 30, 18, this.palette.muted)
     }
 
-    canvas.setPaint({ color, line_width: 2 })
-    let previous
-    for (const point of chart.points) {
-      const x = pad + Math.round(point.x * width)
-      const y = pad + Math.round(point.y * height)
-      if (point.connect && previous) {
+    canvas.setPaint({ color, line_width: 3 })
+    const points = chart.points.map(point => ({
+      x: pad + Math.round(point.x * width),
+      y: pad + Math.round(point.y * height),
+      connect: point.connect,
+    }))
+    points.forEach((point, index) => {
+      const { x, y } = point
+      if (point.connect) {
+        const previous = points[index - 1]
         canvas.drawLine({ x1: previous.x, y1: previous.y, x2: x, y2: y, color })
+      } else if (!points[index + 1]?.connect) {
+        canvas.drawLine({ x1: Math.max(pad, x - 3), y1: y, x2: Math.min(pad + width, x + 3), y2: y, color })
       }
-      canvas.drawCircle({ center_x: x, center_y: y, radius: point === latest ? 5 : 2, color })
-      previous = { x, y }
-    }
+    })
   },
 })
