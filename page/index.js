@@ -26,7 +26,10 @@ const PALETTES = {
 
 const LOG_PAGE_SIZE = 4
 const TELEGRAM_CHANNEL = 't.me/bytenenras'
-const MENU_ROW_HEIGHT = 74
+const SCREEN_SIZE = 480
+const MENU_TOP = 104
+const MENU_HEIGHT = 287
+const MENU_ROW_HEIGHT = 96
 const PARENTS = {
   settings: 'main', graph: 'main', colors: 'appearance', theme: 'appearance', period: 'trend',
   chartPeriod: 'chartSettings', chartColors: 'chartSettings',
@@ -43,6 +46,13 @@ function formatLogDate(time) {
   const date = new Date(time)
   return date.getFullYear() + '-' + twoDigits(date.getMonth() + 1) + '-' + twoDigits(date.getDate())
     + '  ' + formatTime(time)
+}
+
+function menuInset(screenY) {
+  const radius = SCREEN_SIZE / 2
+  const y = Math.max(MENU_TOP, Math.min(MENU_TOP + MENU_HEIGHT, screenY))
+  const halfWidth = Math.sqrt(radius ** 2 - (y - radius) ** 2)
+  return Math.ceil(radius - halfWidth) + 20
 }
 
 Page({
@@ -177,41 +187,77 @@ Page({
   },
 
   menuList(title, items) {
-    this.text(title, 65, 52, 350, 45, 31)
+    this.text(title, 59, 49, 362, 48, 34)
     items.forEach(({ label, action, detail, selected, color, icon }, index) => {
       const y = index * MENU_ROW_HEIGHT
-      this.menu.createWidget(ui.widget.BUTTON, {
-        x: 65, y, w: 350, h: MENU_ROW_HEIGHT, text: '',
-        normal_color: this.palette.background, press_color: this.palette.surface, click_func: action,
-      })
-      let inset = 84
+      let decoration
       if (icon) {
-        this.menu.createWidget(ui.widget.IMG, {
-          x: 72, y: y + 19, src: 'menu-' + icon + '-' + this.settings.theme + '.png',
+        decoration = this.menu.createWidget(ui.widget.IMG, {
+          x: 0, y: y + 30, src: 'menu-' + icon + '-' + this.settings.theme + '.png',
         })
-        inset = 111
       } else if (color !== undefined) {
-        this.menu.createWidget(ui.widget.FILL_RECT, { x: 82, y: y + 28, w: 15, h: 15, radius: 7, color })
-        inset = 108
+        decoration = this.menu.createWidget(ui.widget.FILL_RECT, { x: 0, y: y + 38, w: 20, h: 20, radius: 10, color })
       }
-      this.menuText(label, inset, y + (detail ? 6 : 0), 370 - inset,
-        detail ? 36 : MENU_ROW_HEIGHT, icon ? 29 : 31, this.palette.text)
-      if (detail) this.menuText(detail, inset, y + 42, 370 - inset, 23, 19, this.palette.muted)
-      this.menuText(selected ? '✓' : selected === false ? '' : '›', 369, y, 34, MENU_ROW_HEIGHT,
-        25, selected ? this.palette.mint : this.palette.muted, ui.align.CENTER_H)
+      const labelWidget = this.menuText(label, 0, y + (detail ? 6 : 0), SCREEN_SIZE,
+        detail ? 49 : MENU_ROW_HEIGHT, 36, this.palette.text, ui.align.LEFT, true)
+      const detailWidget = detail ? this.menuText(detail, 0, y + 55, SCREEN_SIZE, 30, 22, this.palette.muted) : null
+      const indicator = selected === false ? null : this.menuText(selected ? '✓' : '›', 0, y, 32, MENU_ROW_HEIGHT,
+        30, selected ? this.palette.mint : this.palette.muted, ui.align.CENTER_H)
+
+      // The native button is above the text and icons so any part of the row can be tapped.
+      this.menu.createWidget(ui.widget.BUTTON, {
+        x: 0, y, w: SCREEN_SIZE, h: MENU_ROW_HEIGHT, text: '',
+        normal_src: 'menu-hit.png', press_src: 'menu-hit-pressed.png', click_func: action,
+      })
+      this.menuRows.push({ y, decoration, icon, color, labelWidget, detailWidget, indicator })
     })
+    this.layoutMenuRows(0)
+  },
+
+  layoutMenuRows(offset) {
+    for (const row of this.menuRows) {
+      const y = row.y - offset
+      if (offset !== 0 && (y > MENU_HEIGHT || y + MENU_ROW_HEIGHT < 0)) continue
+      const inset = menuInset(MENU_TOP + y + MENU_ROW_HEIGHT / 2)
+      if (inset === row.inset) continue
+      row.inset = inset
+      const x = inset + (row.icon ? 43 : row.decoration ? 32 : 0)
+      const right = SCREEN_SIZE - inset
+      const w = right - x - (row.indicator ? 37 : 0)
+      row.labelWidget.setProperty(ui.prop.MORE, {
+        x, y: row.y + (row.detailWidget ? 6 : 0), w, h: row.detailWidget ? 49 : MENU_ROW_HEIGHT,
+      })
+      if (row.detailWidget) row.detailWidget.setProperty(ui.prop.MORE, { x, y: row.y + 55, w, h: 30 })
+      if (row.indicator) row.indicator.setProperty(ui.prop.MORE, { x: right - 32, y: row.y, w: 32, h: MENU_ROW_HEIGHT })
+      if (row.icon) row.decoration.setProperty(ui.prop.MORE, { x: inset, y: row.y + 30, w: 32, h: 36 })
+      else if (row.decoration) {
+        row.decoration.setProperty(ui.prop.MORE, { x: inset, y: row.y + 38, w: 20, h: 20, radius: 10, color: row.color })
+      }
+    }
   },
 
   render() {
     for (const control of this.widgets) ui.deleteWidget(control)
     this.widgets = []
+    this.menuRows = []
     this.backgroundStatus = null
     this.palette = PALETTES[this.settings.theme]
     this.strings = STRINGS[this.settings.language]
     this.accent = this.palette[this.settings.color]
     this.fill(0, 0, 480, 480, this.palette.background)
     const menuScreen = this.screen !== 'main' && this.screen !== 'graph'
-    this.menu = menuScreen ? this.add(ui.widget.VIEW_CONTAINER, { x: 0, y: 104, w: 480, h: 287, scroll_enable: 1 }) : null
+    let menu
+    if (menuScreen) {
+      menu = this.add(ui.widget.VIEW_CONTAINER, {
+        x: 0, y: MENU_TOP, w: SCREEN_SIZE, h: MENU_HEIGHT, scroll_enable: 1, bounce: 0,
+        scroll_frame_func: info => {
+          if (menu && this.menu === menu && Number.isFinite(info?.yoffset)) {
+            this.layoutMenuRows(Math.abs(info.yoffset))
+          }
+        },
+      })
+    }
+    this.menu = menu
 
     switch (this.screen) {
       case 'main': this.renderMain(); break
@@ -424,7 +470,7 @@ Page({
       { label: t.period, detail: formatPeriod(trend.minutes, this.settings.language), action: () => this.open('period') },
       { label: t.format, detail: t[trend.mode], action: () => this.editTrend('mode', trend.mode === 'arrow' ? 'sign' : 'arrow') },
     ])
-    this.backgroundStatus = this.menuText(this.backgroundStatusText(), 84, 225, 310, 56, 17,
+    this.backgroundStatus = this.menuText(this.backgroundStatusText(), 84, MENU_ROW_HEIGHT * 3 + 6, 310, 56, 19,
       this.palette.muted, ui.align.LEFT, true)
   },
 
@@ -477,7 +523,7 @@ Page({
     const t = this.strings
     const info = getPackageInfo()
     const version = info?.version?.name || info?.app?.version?.name
-      || (typeof info?.version === 'string' ? info.version : '1.1.0')
+      || (typeof info?.version === 'string' ? info.version : '1.1.1')
     this.text(t.about, 66, 51, 348, 45, 31)
     this.menuText(t.appName + '  ·  ' + t.version + ' ' + version,
       80, 0, 320, 28, 21, this.palette.muted, ui.align.CENTER_H)
