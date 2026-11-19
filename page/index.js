@@ -8,11 +8,13 @@ import { STRINGS } from '../lib/strings.js'
 
 const PALETTES = {
   dark: {
-    background: 0x0b131b, surface: 0x182631, pressed: 0x2c3d49, text: 0xeaf3f8, muted: 0xa1b4c1,
+    background: 0x000000, surface: 0x223039, pressed: 0x344653, outline: 0x304148,
+    text: 0xeaf3f8, muted: 0xa1b4c1,
     auto: 0xeaf3f8, blue: 0x89c9ff, mint: 0x78decf, gold: 0xffd686, rose: 0xff9eac, violet: 0xc5b4ff,
   },
   light: {
-    background: 0xf0f6f6, surface: 0xdde9eb, pressed: 0xc5d8db, text: 0x16282f, muted: 0x435b66,
+    background: 0xd6dddf, surface: 0xbdc9ce, pressed: 0xaebec4, outline: 0x9aaeb5,
+    text: 0x16282f, muted: 0x435b66,
     auto: 0x16282f, blue: 0x155fa0, mint: 0x106d5b, gold: 0x825500, rose: 0xa72755, violet: 0x6347a4,
   },
 }
@@ -100,7 +102,7 @@ Page({
   text(text, x, y, w, h, textSize, color = this.palette.text) {
     return this.add(ui.widget.TEXT, {
       x, y, w, h, text, text_size: textSize, color,
-      align_h: ui.align.CENTER, align_v: ui.align.CENTER,
+      align_h: ui.align.CENTER_H, align_v: ui.align.CENTER_V,
     })
   },
 
@@ -155,34 +157,44 @@ Page({
   renderMain() {
     const { language, unit, trends } = this.settings
     const enabled = trends.filter(trend => trend.enabled)
-    const offset = enabled.length ? -26 : 0
-    this.text(this.strings.pressure, 78, 106 + offset, 324, 41, 27, this.palette.muted)
-    this.reading = this.text('', 35, 148 + offset, 410, 108, 87, this.accent)
-    this.readingUnit = this.text(UNITS[unit][language], 65, 261 + offset, 350, 40, 28, this.palette.muted)
+    const offset = enabled.length ? 0 : 90
+    this.text(this.strings.pressure, 80, 35 + offset, 320, 42, 28, this.palette.muted)
+    this.reading = this.text('', 44, 75 + offset, 392, 150, 132, this.accent)
+    this.readingUnit = this.text(UNITS[unit][language], 70, 215 + offset, 340, 33, 26, this.palette.muted)
     this.trendReadouts = enabled.map((trend, index) => {
-      const w = 152
-      const x = enabled.length === 1 ? 164 : 82 + index * 164
-      this.fill(x, 290, w, 76, this.palette.surface, 19)
-      this.text(formatPeriod(trend.minutes, language), x, 295, w, 27, 19, this.palette.muted)
-      return { trend, control: this.text('', x, 322, w, 38, 29, this.accent) }
+      const w = 174
+      const x = enabled.length === 1 ? (480 - w) / 2 : 59 + index * 188
+      const frame = { x, y: 258, w, h: 112, radius: 22 }
+      this.add(ui.widget.FILL_RECT, { ...frame, color: this.palette.surface }).setAlpha(112)
+      this.add(ui.widget.STROKE_RECT, { ...frame, color: this.palette.outline, line_width: 1 })
+      this.text(formatPeriod(trend.minutes, language), x, 266, w, 25, 20, this.palette.muted)
+      return {
+        trend,
+        value: this.text('', x, 289, w, 48, 34, this.accent),
+        status: this.text('', x, 337, w, 25, 17, this.palette.muted),
+      }
     })
-    const settingsY = enabled.length ? 392 : 373
-    this.button(this.strings.settings, 149, settingsY, 182, 45, () => this.open('settings'), { size: 22, radius: 23 })
+    const settingsIcon = 'settings-' + this.settings.theme
+    this.add(ui.widget.BUTTON, {
+      x: 194, y: 398, w: 92, h: 56, text: '',
+      normal_src: settingsIcon + '.png',
+      press_src: settingsIcon + '-pressed.png',
+      click_func: () => this.open('settings'),
+    })
     this.updateReadings()
   },
 
   updateReadings() {
-    const { language, unit } = this.settings
-    this.reading.setProperty(ui.prop.TEXT, formatPressure(this.pressure, unit, language))
+    const { language, unit, showTenths } = this.settings
+    const reading = formatPressure(this.pressure, unit, showTenths)
+    this.reading.setProperty(ui.prop.MORE, { text: reading, text_size: reading.length > 5 ? 108 : 132 })
     this.readingUnit.setProperty(ui.prop.TEXT, this.pressure === null ? this.strings.unavailable : UNITS[unit][language])
     if (!this.trendReadouts.length) return
     const history = this.foregroundHistory.concat(this.backgroundHistory)
-    for (const { trend, control } of this.trendReadouts) {
+    for (const { trend, value, status } of this.trendReadouts) {
       const delta = pressureChange(history, this.now, this.pressure, trend.minutes)
-      control.setProperty(ui.prop.MORE, {
-        text: delta === null ? this.strings.collecting : formatTrend(delta, unit, language, trend.mode),
-        text_size: delta === null ? 18 : 29,
-      })
+      value.setProperty(ui.prop.TEXT, formatTrend(delta, unit, trend.mode))
+      status.setProperty(ui.prop.TEXT, delta === null ? this.strings.collecting : '')
     }
   },
 
@@ -224,7 +236,7 @@ Page({
 
   renderAppearance() {
     const t = this.strings
-    const { theme, color } = this.settings
+    const { theme, color, showTenths, unit } = this.settings
     this.title(t.appearance)
     this.rows([
       { label: t.theme + ' · ' + t[theme], action: () => {
@@ -233,8 +245,13 @@ Page({
         this.render()
       } },
       { label: t.color + ' · ' + t[color], action: () => this.open('colors'), color: this.accent },
-    ], 153, 73)
-    this.text(formatPressure(this.pressure, this.settings.unit, this.settings.language), 90, 291, 300, 79, 52, this.accent)
+      { label: t.tenths + ' · ' + (showTenths ? t.on : t.off), action: () => {
+        this.settings.showTenths = !showTenths
+        saveSettings(this.settings)
+        this.render()
+      } },
+    ], 120, 62)
+    this.text(formatPressure(this.pressure, unit, showTenths), 90, 310, 300, 70, 48, this.accent)
   },
 
   renderColors() {
