@@ -3,7 +3,8 @@ import { Barometer } from '@zos/sensor'
 import { GESTURE_RIGHT, KEY_BACK, KEY_EVENT_CLICK, onGesture, onKey, offGesture, offKey } from '@zos/interaction'
 import { formatPeriod, formatPressure, formatTrend, MINUTE, PERIODS, pressureChange, UNITS } from '../lib/pressure.js'
 import { BACKGROUND, FOREGROUND, readHistory, readPressure, recordSample } from '../lib/history.js'
-import { COLORS, readSettings, saveSettings, syncSamplingAlarm } from '../lib/watch-data.js'
+import { COLORS, readSettings, saveSettings } from '../lib/watch-data.js'
+import { cancelLegacySamplingAlarms, setBackgroundSampling } from '../lib/sampling.js'
 import { STRINGS } from '../lib/strings.js'
 
 const PALETTES = {
@@ -24,7 +25,11 @@ Page({
     this.settings = readSettings()
     this.widgets = []
     this.reading = null
+    this.backgroundStatus = null
     this.screen = 'main'
+    this.destroyed = false
+    this.backgroundPending = false
+    this.backgroundReady = false
     this.foregroundHistory = readHistory(FOREGROUND)
     this.backgroundHistory = readHistory(BACKGROUND)
     this.historyReadAt = Date.now()
@@ -33,7 +38,8 @@ Page({
     } catch (error) {
       console.log('Barometer:', String(error))
     }
-    this.alarmReady = syncSamplingAlarm(this.hasTrends())
+    cancelLegacySamplingAlarms()
+    this.updateBackgroundSampling()
     this.measure()
     this.render()
     this.timer = setInterval(() => this.measure(), 5000)
@@ -42,6 +48,7 @@ Page({
   },
 
   onDestroy() {
+    this.destroyed = true
     clearInterval(this.timer)
     offGesture()
     offKey()
@@ -49,6 +56,23 @@ Page({
 
   hasTrends() {
     return this.settings.trends.some(trend => trend.enabled)
+  },
+
+  updateBackgroundSampling() {
+    if (this.backgroundPending) return
+    const enabled = this.hasTrends()
+    this.backgroundPending = true
+    setBackgroundSampling(enabled, ready => {
+      this.backgroundPending = false
+      if (enabled !== this.hasTrends()) {
+        this.updateBackgroundSampling()
+        return
+      }
+      this.backgroundReady = ready
+      if (!this.destroyed && this.screen === 'trend' && this.backgroundStatus) {
+        this.backgroundStatus.setProperty(ui.prop.TEXT, this.backgroundStatusText())
+      }
+    })
   },
 
   measure() {
@@ -62,6 +86,9 @@ Page({
       }
     }
     if (this.screen === 'main' && this.reading) this.updateReadings()
+    if (this.screen === 'trend' && this.backgroundStatus) {
+      this.backgroundStatus.setProperty(ui.prop.TEXT, this.backgroundStatusText())
+    }
   },
 
   open(screen) {
@@ -86,8 +113,8 @@ Page({
     const hadTrends = this.hasTrends()
     this.settings.trends[this.trendIndex][field] = value
     saveSettings(this.settings)
-    if (hadTrends !== this.hasTrends() || !this.alarmReady) {
-      this.alarmReady = syncSamplingAlarm(this.hasTrends())
+    if (hadTrends !== this.hasTrends() || (field === 'enabled' && value && !this.backgroundReady)) {
+      this.updateBackgroundSampling()
     }
     this.measure()
     this.render()
@@ -133,6 +160,7 @@ Page({
   render() {
     for (const control of this.widgets) ui.deleteWidget(control)
     this.widgets = []
+    this.backgroundStatus = null
     this.palette = PALETTES[this.settings.theme]
     this.strings = STRINGS[this.settings.language]
     this.accent = this.palette[this.settings.color]
@@ -287,9 +315,18 @@ Page({
     ], 129, 62)
     const demo = trend.mode === 'arrow' ? '↑ 3       ↓ 2' : '+3       −2'
     this.text(demo, 102, 319, 276, 49, 29, this.accent)
-    if (trend.enabled && !this.alarmReady) {
-      this.text(t.alarmError, 75, 365, 330, 26, 18, this.palette.muted)
-    }
+    this.backgroundStatus = this.text(this.backgroundStatusText(), 60, 365, 360, 26, 18, this.palette.muted)
+  },
+
+  backgroundStatusText() {
+    if (!this.settings.trends[this.trendIndex].enabled) return ''
+    const t = this.strings
+    if (this.backgroundPending) return t.backgroundStarting
+    if (!this.backgroundReady) return t.backgroundUnavailable
+    const last = this.backgroundHistory[this.backgroundHistory.length - 1]
+    if (!last || last[0] > this.now) return t.backgroundWaiting
+    const minutes = Math.floor((this.now - last[0]) / MINUTE)
+    return t.backgroundLast + ' ' + minutes + ' ' + t.minutesAgo
   },
 
   renderPeriod() {
