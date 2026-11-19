@@ -1,23 +1,32 @@
 import * as ui from '@zos/ui'
 import { Barometer } from '@zos/sensor'
 import { GESTURE_RIGHT, KEY_BACK, KEY_EVENT_CLICK, onGesture, onKey, offGesture, offKey } from '@zos/interaction'
-import { formatPeriod, formatPressure, formatTrend, MINUTE, PERIODS, pressureChange, UNITS } from '../lib/pressure.js'
+import { formatPeriod, formatPressure, formatTrend, MINUTE, PERIODS, pressureChange, trimHistory, UNITS } from '../lib/pressure.js'
 import { BACKGROUND, FOREGROUND, readHistory, readPressure, recordSample } from '../lib/history.js'
 import { COLORS, readSettings, saveSettings } from '../lib/watch-data.js'
-import { cancelLegacySamplingAlarms, setBackgroundSampling } from '../lib/sampling.js'
+import { setBackgroundSampling } from '../lib/sampling.js'
 import { STRINGS } from '../lib/strings.js'
 
 const PALETTES = {
   dark: {
     background: 0x000000, surface: 0x223039, pressed: 0x344653, outline: 0x304148,
     text: 0xeaf3f8, muted: 0xa1b4c1,
-    auto: 0xeaf3f8, blue: 0x89c9ff, mint: 0x78decf, gold: 0xffd686, rose: 0xff9eac, violet: 0xc5b4ff,
+    auto: 0xeaf3f8, blue: 0x73b9ef, mint: 0x78decf, gold: 0xffd686, orange: 0xffaa68, violet: 0xb3a0ef,
   },
   light: {
     background: 0xd6dddf, surface: 0xbdc9ce, pressed: 0xaebec4, outline: 0x9aaeb5,
     text: 0x16282f, muted: 0x435b66,
-    auto: 0x16282f, blue: 0x155fa0, mint: 0x106d5b, gold: 0x825500, rose: 0xa72755, violet: 0x6347a4,
+    auto: 0x16282f, blue: 0x124f8b, mint: 0x106d5b, gold: 0x825500, orange: 0x914700, violet: 0x573b94,
   },
+}
+
+const LOG_PAGE_SIZE = 4
+
+function formatLogDate(time) {
+  const date = new Date(time)
+  const twoDigits = value => ('0' + value).slice(-2)
+  return date.getFullYear() + '-' + twoDigits(date.getMonth() + 1) + '-' + twoDigits(date.getDate())
+    + '  ' + twoDigits(date.getHours()) + ':' + twoDigits(date.getMinutes())
 }
 
 Page({
@@ -27,9 +36,6 @@ Page({
     this.reading = null
     this.backgroundStatus = null
     this.screen = 'main'
-    this.destroyed = false
-    this.backgroundPending = false
-    this.backgroundReady = false
     this.foregroundHistory = readHistory(FOREGROUND)
     this.backgroundHistory = readHistory(BACKGROUND)
     this.historyReadAt = Date.now()
@@ -38,8 +44,7 @@ Page({
     } catch (error) {
       console.log('Barometer:', String(error))
     }
-    cancelLegacySamplingAlarms()
-    this.updateBackgroundSampling()
+    this.backgroundReady = setBackgroundSampling(this.hasTrends())
     this.measure()
     this.render()
     this.timer = setInterval(() => this.measure(), 5000)
@@ -48,7 +53,6 @@ Page({
   },
 
   onDestroy() {
-    this.destroyed = true
     clearInterval(this.timer)
     offGesture()
     offKey()
@@ -56,23 +60,6 @@ Page({
 
   hasTrends() {
     return this.settings.trends.some(trend => trend.enabled)
-  },
-
-  updateBackgroundSampling() {
-    if (this.backgroundPending) return
-    const enabled = this.hasTrends()
-    this.backgroundPending = true
-    setBackgroundSampling(enabled, ready => {
-      this.backgroundPending = false
-      if (enabled !== this.hasTrends()) {
-        this.updateBackgroundSampling()
-        return
-      }
-      this.backgroundReady = ready
-      if (!this.destroyed && this.screen === 'trend' && this.backgroundStatus) {
-        this.backgroundStatus.setProperty(ui.prop.TEXT, this.backgroundStatusText())
-      }
-    })
   },
 
   measure() {
@@ -114,7 +101,7 @@ Page({
     this.settings.trends[this.trendIndex][field] = value
     saveSettings(this.settings)
     if (hadTrends !== this.hasTrends() || (field === 'enabled' && value && !this.backgroundReady)) {
-      this.updateBackgroundSampling()
+      this.backgroundReady = setBackgroundSampling(this.hasTrends())
     }
     this.measure()
     this.render()
@@ -151,9 +138,9 @@ Page({
     this.text(title, 70, 55, 340, 51, 30)
   },
 
-  rows(items, y, rowGap = 58) {
+  rows(items, y, rowGap = 58, height = 50) {
     items.forEach(({ label, action, color }, index) => {
-      this.button(label, 76, y + index * rowGap, 328, 50, action, { color })
+      this.button(label, 76, y + index * rowGap, 328, height, action, { color })
     })
   },
 
@@ -175,6 +162,7 @@ Page({
       case 'colors': this.renderColors(); break
       case 'trend': this.renderTrend(); break
       case 'period': this.renderPeriod(); break
+      case 'log': this.renderLog(); break
     }
 
     if (this.screen !== 'main') {
@@ -241,7 +229,50 @@ Page({
           this.open('trend')
         },
       })),
-    ], 111, 56)
+      { label: t.log, action: () => this.openLog() },
+    ], 107, 47, 42)
+  },
+
+  openLog() {
+    const now = Date.now()
+    const foreground = trimHistory(readHistory(FOREGROUND), now)
+    const background = trimHistory(readHistory(BACKGROUND), now)
+    this.logEntries = foreground.map(([time, pressure]) => ({ time, pressure, background: false }))
+      .concat(background.map(([time, pressure]) => ({ time, pressure, background: true })))
+      .sort((left, right) => right.time - left.time)
+    this.logPage = 0
+    this.open('log')
+  },
+
+  renderLog() {
+    const t = this.strings
+    const { unit, language, showTenths } = this.settings
+    this.text(t.log, 72, 45, 336, 44, 29)
+    const latestBackground = this.logEntries.find(entry => entry.background)
+    this.text(t.logLastBackground, 72, 91, 336, 25, 18, this.palette.muted)
+    this.text(latestBackground ? formatLogDate(latestBackground.time) : '—', 72, 116, 336, 25, 19, this.accent)
+    if (!this.logEntries.length) {
+      this.text(t.logEmpty, 62, 198, 356, 55, 22, this.palette.muted)
+      return
+    }
+    const start = this.logPage * LOG_PAGE_SIZE
+    this.logEntries.slice(start, start + LOG_PAGE_SIZE).forEach((entry, index) => {
+      const y = 146 + 53 * index
+      this.fill(71, y, 338, 49, this.palette.surface, 13)
+      const reading = formatPressure(entry.pressure, unit, showTenths) + ' ' + UNITS[unit][language]
+      const source = entry.background ? t.logBackground : t.logForeground
+      this.text(formatLogDate(entry.time), 74, y, 332, 24, 18, this.palette.muted)
+      this.text(reading + ' · ' + source, 74, y + 23, 332, 24, 19, this.palette.text)
+    })
+    const pages = Math.ceil(this.logEntries.length / LOG_PAGE_SIZE)
+    if (pages === 1) return
+    this.text((this.logPage + 1) + ' / ' + pages, 200, 357, 80, 38, 20, this.palette.muted)
+    if (this.logPage > 0) {
+      this.button('‹', 107, 354, 66, 44, () => { this.logPage--; this.render() }, { size: 30 })
+    }
+    if (this.logPage + 1 < pages) {
+      this.button('›', 307, 354, 66, 44, () => { this.logPage++; this.render() }, { size: 30 })
+    }
   },
 
   renderUnits() {
@@ -321,7 +352,6 @@ Page({
   backgroundStatusText() {
     if (!this.settings.trends[this.trendIndex].enabled) return ''
     const t = this.strings
-    if (this.backgroundPending) return t.backgroundStarting
     if (!this.backgroundReady) return t.backgroundUnavailable
     const last = this.backgroundHistory[this.backgroundHistory.length - 1]
     if (!last || last[0] > this.now) return t.backgroundWaiting
