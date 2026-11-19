@@ -1,0 +1,13 @@
+{
+  "name": "balance-barometer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "zeus build",
+    "preview": "zeus preview"
+  },
+  "devDependencies": {
+    "@zeppos/zeus-cli": "1.10.2"
+  }
+}
