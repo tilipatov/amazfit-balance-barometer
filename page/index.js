@@ -2,7 +2,7 @@ import * as ui from '@zos/ui'
 import { Barometer } from '@zos/sensor'
 import { GESTURE_DOWN, GESTURE_RIGHT, GESTURE_UP, KEY_BACK, KEY_EVENT_CLICK, KEY_HOME,
   onDigitalCrown, onGesture, onKey, offDigitalCrown, offGesture, offKey } from '@zos/interaction'
-import { formatPeriod, formatPressure, formatTrend, MINUTE, PERIODS, pressureChange, trimHistory, UNITS } from '../lib/pressure.js'
+import { addSample, formatPeriod, formatPressure, formatTrend, MINUTE, PERIODS, pressureChange, trimHistory, UNITS } from '../lib/pressure.js'
 import { CHART_PERIODS, chartTimeTicks, makeChart } from '../lib/chart.js'
 import { BACKGROUND, FOREGROUND, readHistory, readPressure, recordSample } from '../lib/history.js'
 import { CHART_COLORS, COLORS, readSettings, saveSettings } from '../lib/watch-data.js'
@@ -33,6 +33,9 @@ const MENU_TOP = 104
 const MENU_HEIGHT = 287
 const MENU_ROW_HEIGHT = 96
 const CROWN_SCROLL_TIMEOUT = 800
+const NAVIGATION_DELAY = 180
+const SCROLL_QUIET_TIME = 250
+const WORK_SPACING = 60
 const PARENTS = {
   settings: 'main', graph: 'main', colors: 'appearance', theme: 'appearance', period: 'trend',
   chartPeriod: 'chartSettings', chartColors: 'chartSettings',
@@ -63,27 +66,29 @@ Page({
   build() {
     this.settings = readSettings()
     this.hintVisible = !this.settings.swipeHintSeen
-    if (this.hintVisible) {
-      this.settings.swipeHintSeen = true
-      saveSettings(this.settings)
-    }
     this.widgets = []
     this.reading = null
     this.backgroundStatus = null
     this.diagnosticStatus = null
     this.graphReadStatus = null
+    this.graphOpening = false
     this.active = true
     this.screen = 'main'
-    this.foregroundHistory = readHistory(FOREGROUND) ?? []
-    this.backgroundHistory = readHistory(BACKGROUND) ?? []
-    this.historyReadAt = Date.now()
+    this.foregroundHistory = []
+    this.backgroundHistory = []
+    this.historyReadAt = -Infinity
+    this.backgroundReady = null
+    this.work = new Map()
+    this.workTimer = undefined
+    this.uiBusyUntil = Date.now() + NAVIGATION_DELAY
     try {
       this.barometer = new Barometer()
     } catch (error) {
       console.log('Barometer:', String(error))
     }
-    this.backgroundReady = setBackgroundSampling(this.hasTrends(), this.settings.diagnosticMinutes)
-    this.measure()
+    this.now = Date.now()
+    this.readingAt = this.now
+    this.pressure = readPressure(this.barometer)
     this.render()
     this.timer = setInterval(() => this.measure(), 5000)
     onGesture({ callback: event => this.handleGesture(event) })
@@ -92,11 +97,27 @@ Page({
       if (key === KEY_HOME && this.menuRows.length) this.trackCrownScroll()
       return false
     } })
+    this.queueWork('open-history', () => {
+      this.foregroundHistory = readHistory(FOREGROUND) ?? this.foregroundHistory
+      this.updateHistoryWidgets()
+      this.queueSample()
+    })
+    this.queueWork('alarm', () => {
+      this.backgroundReady = setBackgroundSampling(this.hasTrends(), this.settings.diagnosticMinutes)
+      if (this.screen === 'trend' || this.screen === 'diagnostics') this.render()
+    })
+    this.queueBackgroundRefresh()
+    if (this.hintVisible) {
+      this.settings.swipeHintSeen = true
+      this.queueWork('swipe-hint', () => saveSettings(this.settings))
+    }
   },
 
   onDestroy() {
     this.active = false
     clearInterval(this.timer)
+    if (this.workTimer !== undefined) clearTimeout(this.workTimer)
+    this.work.clear()
     this.stopCrownTracking()
     offDigitalCrown()
     offGesture()
@@ -107,20 +128,53 @@ Page({
     return this.settings.trends.some(trend => trend.enabled)
   },
 
+  queueWork(key, task) {
+    this.work.set(key, task)
+    this.scheduleWork()
+  },
+
+  scheduleWork() {
+    if (!this.active || !this.work.size || this.workTimer !== undefined) return
+    const delay = Math.max(WORK_SPACING, this.uiBusyUntil - Date.now())
+    this.workTimer = setTimeout(() => {
+      this.workTimer = undefined
+      if (!this.active || !this.work.size) return
+      if (Date.now() >= this.uiBusyUntil) {
+        const [key, task] = this.work.entries().next().value
+        this.work.delete(key)
+        try {
+          task()
+        } catch (error) {
+          console.log('Barometer maintenance:', String(error))
+        }
+      }
+      this.scheduleWork()
+    }, delay)
+  },
+
+  queueSample() {
+    const { readingAt: now, pressure } = this
+    if (addSample(this.foregroundHistory, now, pressure) === this.foregroundHistory) return
+    this.queueWork('sample', () => {
+      const previous = this.foregroundHistory
+      this.foregroundHistory = recordSample(FOREGROUND, now, pressure, previous)
+      if (previous !== this.foregroundHistory) this.updateHistoryWidgets()
+    })
+  },
+
   measure() {
+    if (Date.now() < this.uiBusyUntil) return
     this.now = Date.now()
+    this.readingAt = this.now
     this.pressure = readPressure(this.barometer)
-    const previous = this.foregroundHistory
-    this.foregroundHistory = recordSample(FOREGROUND, this.now, this.pressure, previous)
     if (this.hasTrends() || this.screen === 'graph') {
       if (this.now < this.historyReadAt || this.now - this.historyReadAt >= MINUTE / 2) {
-        if (this.screen === 'graph') this.refreshGraphHistory(false)
-        else this.backgroundHistory = readHistory(BACKGROUND) ?? this.backgroundHistory
-        this.historyReadAt = this.now
+        this.queueBackgroundRefresh()
       }
     }
+    this.queueSample()
     if (this.screen === 'main' && this.reading) this.updateReadings()
-    if (this.screen === 'graph' && (previous !== this.foregroundHistory || Math.floor(this.now / MINUTE) !== this.chartRenderedMinute)) {
+    if (this.screen === 'graph' && Math.floor(this.now / MINUTE) !== this.chartRenderedMinute) {
       this.render()
     }
     if (this.screen === 'trend' && this.backgroundStatus) {
@@ -129,14 +183,22 @@ Page({
   },
 
   open(screen) {
+    this.uiBusyUntil = Date.now() + NAVIGATION_DELAY
     this.screen = screen
+    if (screen === 'graph') {
+      this.now = Date.now()
+      this.graphOpening = true
+      this.queueBackgroundRefresh()
+    } else {
+      this.graphOpening = false
+      if (!this.hasTrends() && Number.isFinite(this.historyReadAt)) this.work.delete('background')
+    }
     this.render()
   },
 
   handleGesture(event) {
     if (event === GESTURE_UP && this.screen === 'main') {
       this.hintVisible = false
-      this.refreshGraphHistory(true)
       this.open('graph')
       return true
     }
@@ -144,24 +206,54 @@ Page({
     return event === GESTURE_RIGHT && this.goBack()
   },
 
-  refreshGraphHistory(opening) {
+  queueBackgroundRefresh() {
+    this.queueWork('background', () => this.refreshBackgroundHistory())
+  },
+
+  updateHistoryWidgets() {
+    if (this.screen === 'main') {
+      this.updateReadings()
+    } else if (this.screen === 'graph') {
+      this.render()
+    } else if (this.screen === 'trend' && this.backgroundStatus) {
+      this.backgroundStatus.setProperty(ui.prop.TEXT, this.backgroundStatusText())
+    }
+  },
+
+  refreshBackgroundHistory() {
     let history
-    const previousCount = this.backgroundHistory.length
-    this.backgroundHistory = readHistory(BACKGROUND, details => { history = details }) ?? this.backgroundHistory
+    const previous = this.backgroundHistory
+    const updated = readHistory(BACKGROUND, details => { history = details }) ?? previous
+    const changed = updated.length !== previous.length
+      || updated.some(([time, pressure], index) => time !== previous[index][0] || pressure !== previous[index][1])
+    if (changed) this.backgroundHistory = updated
+    this.historyReadAt = Date.now()
+    if (this.screen !== 'graph') {
+      if (changed) this.updateHistoryWidgets()
+      return
+    }
+
+    const opening = this.graphOpening
+    this.graphOpening = false
     const status = history.status + ':' + history.slots.join(',')
     const statusChanged = this.graphReadStatus !== status
     this.graphReadStatus = status
-    if (opening || statusChanged || this.backgroundHistory.length < previousCount) {
-      const now = Date.now()
+    this.now = this.historyReadAt
+    if (opening || changed) this.render()
+    if (opening || statusChanged || this.backgroundHistory.length < previous.length) {
+      const now = this.now
       const period = this.settings.chartMinutes
-      const { points } = makeChart(this.foregroundHistory.concat(this.backgroundHistory), now, period, this.settings.unit)
-      recordDiagnostic({
+      const start = now - period * MINUTE
+      const visible = this.foregroundHistory.concat(this.backgroundHistory)
+        .filter(([time]) => time >= start && time <= now).length
+      const event = {
         time: now, kind: 'graph', opening, history, period,
-        visible: points.length, foreground: this.foregroundHistory.length,
-        cached: this.backgroundHistory.length, previous: previousCount,
+        visible, foreground: this.foregroundHistory.length,
+        cached: this.backgroundHistory.length, previous: previous.length,
         trendEnabled: this.hasTrends(), timerRegistered: this.backgroundReady,
         interval: this.settings.diagnosticMinutes,
-      })
+      }
+      this.queueWork(Symbol(), () => recordDiagnostic(event))
     }
   },
 
@@ -254,6 +346,7 @@ Page({
     if (!Number.isFinite(value)) return
     const offset = Math.abs(value)
     if (offset === this.menuOffset) return
+    if (this.menuOffset !== undefined) this.uiBusyUntil = Date.now() + SCROLL_QUIET_TIME
     this.menuOffset = offset
     this.layoutMenuRows(offset)
   },
@@ -282,6 +375,7 @@ Page({
 
   trackCrownScroll() {
     this.crownScrollDeadline = Date.now() + CROWN_SCROLL_TIMEOUT
+    this.uiBusyUntil = Date.now() + SCROLL_QUIET_TIME
     if (this.crownTracker !== undefined) return
     const menu = this.menu
     // Some firmware scrolls the view with the crown without sending scroll_frame_func.
@@ -436,7 +530,7 @@ Page({
       { label: t.diagnosticSend, icon: 'log', action: () => this.sendDiagnostics() },
       {
         label: t.diagnosticPeriod,
-        detail: this.hasTrends() && !this.backgroundReady ? interval + ' · ' + t.diagnosticTimerFailed : interval,
+        detail: this.hasTrends() && this.backgroundReady === false ? interval + ' · ' + t.diagnosticTimerFailed : interval,
         action: () => this.open('diagnosticPeriod'),
       },
     ])
@@ -457,10 +551,14 @@ Page({
     })))
   },
 
-  async sendDiagnostics() {
+  sendDiagnostics() {
     if (this.diagnosticStatus === 'diagnosticSending') return
     this.diagnosticStatus = 'diagnosticSending'
     this.render()
+    this.queueWork('send-diagnostics', () => this.transferDiagnostics())
+  },
+
+  async transferDiagnostics() {
     try {
       const time = Date.now()
       const { events, unavailable, stores } = readDiagnostics(time)
@@ -488,14 +586,29 @@ Page({
   },
 
   openLog() {
+    this.logPage = 0
+    this.logLoading = true
+    this.updateLogEntries()
+    this.open('log')
+    this.queueWork('log', () => {
+      if (this.screen !== 'log') return
+      this.foregroundHistory = readHistory(FOREGROUND) ?? this.foregroundHistory
+      this.backgroundHistory = readHistory(BACKGROUND) ?? this.backgroundHistory
+      this.historyReadAt = Date.now()
+      this.logLoading = false
+      this.updateLogEntries()
+      this.render()
+    })
+  },
+
+  updateLogEntries() {
     const now = Date.now()
-    const foreground = trimHistory(readHistory(FOREGROUND) ?? this.foregroundHistory, now)
-    const background = trimHistory(readHistory(BACKGROUND) ?? this.backgroundHistory, now)
+    const foreground = trimHistory(this.foregroundHistory, now)
+    const background = trimHistory(this.backgroundHistory, now)
     this.logEntries = foreground.map(([time, pressure]) => ({ time, pressure, background: false }))
       .concat(background.map(([time, pressure]) => ({ time, pressure, background: true })))
       .sort((left, right) => right.time - left.time)
-    this.logPage = 0
-    this.open('log')
+    this.logPage = Math.min(this.logPage, Math.max(0, Math.ceil(this.logEntries.length / LOG_PAGE_SIZE) - 1))
   },
 
   renderLog() {
@@ -507,7 +620,8 @@ Page({
     this.menuText(latestBackground ? formatLogDate(latestBackground.time) : '—',
       84, 25, 312, 28, 22, this.accent)
     if (!this.logEntries.length) {
-      this.menuText(t.logEmpty, 84, 83, 310, 100, 26, this.palette.text, ui.align.LEFT, true)
+      this.menuText(this.logLoading ? t.chartLoading : t.logEmpty,
+        84, 83, 310, 100, 26, this.palette.text, ui.align.LEFT, true)
       return
     }
     const start = this.logPage * LOG_PAGE_SIZE
@@ -604,7 +718,7 @@ Page({
   backgroundStatusText() {
     if (!this.settings.trends[this.trendIndex].enabled) return ''
     const t = this.strings
-    if (!this.backgroundReady) return t.backgroundUnavailable
+    if (this.backgroundReady === false) return t.backgroundUnavailable
     const last = this.backgroundHistory[this.backgroundHistory.length - 1]
     if (!last || last[0] > this.now) return t.backgroundWaiting
     const minutes = Math.floor((this.now - last[0]) / MINUTE)
@@ -663,7 +777,8 @@ Page({
     this.text(this.strings.chartNow + ' ' + formatTime(now), 100, 377, 280, 42, 23, this.palette.text)
     const chart = makeChart(this.foregroundHistory.concat(this.backgroundHistory), now, chartMinutes, unit)
     if (!chart.points.length) {
-      this.text(this.strings.chartEmpty, 75, 205, 330, 70, 27, this.palette.muted)
+      this.text(this.graphOpening ? this.strings.chartLoading : this.strings.chartEmpty,
+        75, 205, 330, 70, 27, this.palette.muted)
       return
     }
 

@@ -1,5 +1,10 @@
 # История изменений
 
+## [1.1.5 Beta 3] — 20 ноября 2026
+
+- Главный экран и график открываются до чтения истории. Диагностическая запись сохраняется после отрисовки графика.
+- Плановые чтения и записи откладываются до окончания прокрутки меню.
+
 ## [1.1.5 Beta 2] — 20 ноября 2026
 
 - Фоновая история и диагностика переходят на две проверяемые копии. Старые файлы сохраняются, а целые записи из повреждённых файлов восстанавливаются.
@@ -74,3 +79,5 @@
 [1.1.5 Beta 1]: https://github.com/tilipatov/amazfit-balance-barometer/releases/tag/v1.1.5-beta.1
 
 [1.1.5 Beta 2]: https://github.com/tilipatov/amazfit-balance-barometer/releases/tag/v1.1.5-beta.2
+
+[1.1.5 Beta 3]: https://github.com/tilipatov/amazfit-balance-barometer/releases/tag/v1.1.5-beta.3
