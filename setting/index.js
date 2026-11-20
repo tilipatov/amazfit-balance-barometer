@@ -17,6 +17,12 @@ const strings = {
     missing: 'отсутствует',
     unreadable: 'существует, но не читается',
     invalid: 'ошибка формата',
+    recovered: 'данные восстановлены',
+    backup: 'используется рабочая копия',
+    restored: 'восстановлено записей',
+    slots: 'состояние копий',
+    interval: 'Интервал таймера',
+    diagnosticFile: 'Файл диагностики',
     'read-error': 'ошибка чтения',
     saved: 'замер сохранён и проверен',
     duplicate: 'замер пропущен по интервалу',
@@ -36,6 +42,7 @@ const strings = {
     graphSource: 'график',
     hpa: 'гПа',
     hours: 'ч',
+    minutes: 'мин',
   },
   en: {
     title: 'Barometer · Diagnostics',
@@ -51,6 +58,12 @@ const strings = {
     missing: 'missing',
     unreadable: 'exists but could not be read',
     invalid: 'invalid format',
+    recovered: 'data recovered',
+    backup: 'using the intact copy',
+    restored: 'recovered entries',
+    slots: 'copy status',
+    interval: 'Timer interval',
+    diagnosticFile: 'Diagnostic log file',
     'read-error': 'read failed',
     saved: 'reading saved and verified',
     duplicate: 'reading skipped due to sampling interval',
@@ -70,6 +83,7 @@ const strings = {
     graphSource: 'chart',
     hpa: 'hPa',
     hours: 'h',
+    minutes: 'min',
   },
 }
 
@@ -82,6 +96,7 @@ function showTime(time) {
 
 function describeEvent(event, t) {
   const parts = []
+  if (event.interval) parts.push(t.interval + ': ' + event.interval + ' ' + t.minutes)
   if (event.kind === 'background') {
     parts.push(t[event.result])
     if (Number.isFinite(event.pressure)) parts.push(event.pressure + ' ' + t.hpa)
@@ -93,25 +108,42 @@ function describeEvent(event, t) {
   }
   const history = event.history
   if (history) {
-    let summary = t.history + ': ' + t[history.status]
-    if (history.status === 'loaded') {
+    let summary = t.history + ': ' + describeHealth(history, t)
+    if (history.count !== undefined) {
       summary += ' (' + history.count + ')'
       if (history.count > 0) summary += ' · ' + showTime(history.first) + ' — ' + showTime(history.last)
-      if (history.rejected) summary += ' · ' + t.rejected + ': ' + history.rejected
     }
+    if (history.rejected) summary += ' · ' + t.rejected + ': ' + history.rejected
     parts.push(summary)
   }
-  return parts.filter(Boolean).join(' · ')
+  if (event.logHealth) parts.push(t.diagnosticFile + ': ' + describeHealth(event.logHealth, t))
+  return parts.filter(Boolean)
+}
+
+function describeHealth(health, t) {
+  const details = [t[health.status]]
+  if (health.recovered !== undefined) details.push(t.restored + ': ' + health.recovered)
+  if (health.backup) details.push(t.backup)
+  if (health.slots) details.push(t.slots + ': ' + health.slots.map(status => t[status]).join(' / '))
+  return details.filter(Boolean).join(' · ')
+}
+
+function line(value, bold = false) {
+  return View({ style: { display: 'flex', flexDirection: 'column', marginBottom: '6px' } }, [
+    Text({ bold, paragraph: true }, value),
+  ])
 }
 
 AppSettingsPage({
   build({ settingsStorage }) {
     const snapshot = readDiagnosticSnapshot(settingsStorage.getItem(DIAGNOSTIC_STORAGE))
     if (!snapshot) {
-      return Section({ title: 'Барометр · Диагностика / Barometer · Diagnostics' }, [
-        Text({ bold: true }, BETA_VERSION),
-        Text({}, 'На часах: Настройки → Диагностика → Передать журнал в Zepp.'),
-        Text({}, 'On the watch: Settings → Diagnostics → Send log to Zepp.'),
+      return View({ style: { padding: '12px' } }, [
+        Section({ title: 'Барометр · Диагностика / Barometer · Diagnostics' }, [
+          line(BETA_VERSION, true),
+          line('На часах: Настройки → Диагностика → Передать журнал в Zepp.'),
+          line('On the watch: Settings → Diagnostics → Send log to Zepp.'),
+        ]),
       ])
     }
 
@@ -121,20 +153,30 @@ AppSettingsPage({
     const limit = page * PAGE_SIZE
     const sections = [
       Section({ title: t.title }, [
-        Text({ bold: true }, BETA_VERSION),
-        Text({}, t.synced + ': ' + showTime(snapshot.syncedAt)),
+        line(BETA_VERSION, true),
+        line(t.synced + ': ' + showTime(snapshot.syncedAt)),
       ]),
     ]
     if (snapshot.unavailable?.length) {
       const sources = snapshot.unavailable.map(kind => kind === 'background' ? t.backgroundSource : t.graphSource)
-      sections.push(Text({ bold: true }, t.unavailable + ' (' + sources.join(', ') + ')'))
+      sections.push(line(t.unavailable + ' (' + sources.join(', ') + ')', true))
     }
-    if (!events.length) sections.push(Text({}, t.empty))
+    if (snapshot.stores) {
+      const sources = [
+        [t.backgroundSource, snapshot.stores.background], [t.graphSource, snapshot.stores.graph],
+      ]
+      for (const [name, health] of sources) {
+        if (health && (health.backup || health.status !== 'loaded')) {
+          sections.push(line(t.diagnosticFile + ' (' + name + '): ' + describeHealth(health, t)))
+        }
+      }
+    }
+    if (!events.length) sections.push(line(t.empty))
     for (const event of events.slice(-limit).reverse()) {
       const title = event.kind === 'background' ? t.background : event.opening ? t.graph : t.refreshed
       sections.push(Section({ title: showTime(event.time) }, [
-        Text({ bold: true }, title),
-        Text({}, describeEvent(event, t)),
+        line(title, true),
+        ...describeEvent(event, t).map(detail => line(detail)),
       ]))
     }
     if (limit < events.length) {
@@ -143,6 +185,6 @@ AppSettingsPage({
     if (page > 1) {
       sections.push(Button({ label: t.less, onClick: () => settingsStorage.setItem(PAGE_KEY, '1') }))
     }
-    return View({}, sections)
+    return View({ style: { padding: '12px' } }, sections)
   },
 })

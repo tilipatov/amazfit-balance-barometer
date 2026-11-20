@@ -36,6 +36,7 @@ const CROWN_SCROLL_TIMEOUT = 800
 const PARENTS = {
   settings: 'main', graph: 'main', colors: 'appearance', theme: 'appearance', period: 'trend',
   chartPeriod: 'chartSettings', chartColors: 'chartSettings',
+  diagnosticPeriod: 'diagnostics',
 }
 
 const twoDigits = value => ('0' + value).slice(-2)
@@ -81,7 +82,7 @@ Page({
     } catch (error) {
       console.log('Barometer:', String(error))
     }
-    this.backgroundReady = setBackgroundSampling(this.hasTrends())
+    this.backgroundReady = setBackgroundSampling(this.hasTrends(), this.settings.diagnosticMinutes)
     this.measure()
     this.render()
     this.timer = setInterval(() => this.measure(), 5000)
@@ -147,8 +148,9 @@ Page({
     let history
     const previousCount = this.backgroundHistory.length
     this.backgroundHistory = readHistory(BACKGROUND, details => { history = details }) ?? this.backgroundHistory
-    const statusChanged = this.graphReadStatus !== history.status
-    this.graphReadStatus = history.status
+    const status = history.status + ':' + history.slots.join(',')
+    const statusChanged = this.graphReadStatus !== status
+    this.graphReadStatus = status
     if (opening || statusChanged || this.backgroundHistory.length < previousCount) {
       const now = Date.now()
       const period = this.settings.chartMinutes
@@ -158,6 +160,7 @@ Page({
         visible: points.length, foreground: this.foregroundHistory.length,
         cached: this.backgroundHistory.length, previous: previousCount,
         trendEnabled: this.hasTrends(), timerRegistered: this.backgroundReady,
+        interval: this.settings.diagnosticMinutes,
       })
     }
   },
@@ -179,7 +182,7 @@ Page({
     this.settings.trends[this.trendIndex][field] = value
     saveSettings(this.settings)
     if (hadTrends !== this.hasTrends() || (field === 'enabled' && value && !this.backgroundReady)) {
-      this.backgroundReady = setBackgroundSampling(this.hasTrends())
+      this.backgroundReady = setBackgroundSampling(this.hasTrends(), this.settings.diagnosticMinutes)
     }
     this.measure()
     this.render()
@@ -333,6 +336,7 @@ Page({
       case 'period': this.renderPeriod(); break
       case 'log': this.renderLog(); break
       case 'diagnostics': this.renderDiagnostics(); break
+      case 'diagnosticPeriod': this.renderDiagnosticPeriod(); break
       case 'graph': this.renderGraph(); break
       case 'theme': this.renderTheme(); break
       case 'chartSettings': this.renderChartSettings(); break
@@ -427,11 +431,30 @@ Page({
 
   renderDiagnostics() {
     const t = this.strings
-    this.menuList(t.diagnostics, [{
-      label: t.diagnosticSend, icon: 'log', action: () => this.sendDiagnostics(),
-    }])
+    const interval = formatPeriod(this.settings.diagnosticMinutes, this.settings.language)
+    this.menuList(t.diagnostics, [
+      { label: t.diagnosticSend, icon: 'log', action: () => this.sendDiagnostics() },
+      {
+        label: t.diagnosticPeriod,
+        detail: this.hasTrends() && !this.backgroundReady ? interval + ' · ' + t.diagnosticTimerFailed : interval,
+        action: () => this.open('diagnosticPeriod'),
+      },
+    ])
     this.menuText(this.diagnosticStatus ? t[this.diagnosticStatus] : t.diagnosticHelp,
-      82, 110, 316, 120, 22, this.palette.muted, ui.align.LEFT, true)
+      82, 192, 316, 100, 22, this.palette.muted, ui.align.LEFT, true)
+  },
+
+  renderDiagnosticPeriod() {
+    this.menuList(this.strings.diagnosticPeriod, [5, 10].map(minutes => ({
+      label: formatPeriod(minutes, this.settings.language),
+      selected: this.settings.diagnosticMinutes === minutes,
+      action: () => {
+        this.settings.diagnosticMinutes = minutes
+        saveSettings(this.settings)
+        this.backgroundReady = setBackgroundSampling(this.hasTrends(), minutes)
+        this.open('diagnostics')
+      },
+    })))
   },
 
   async sendDiagnostics() {
@@ -440,7 +463,7 @@ Page({
     this.render()
     try {
       const time = Date.now()
-      const { events, unavailable } = readDiagnostics(time)
+      const { events, unavailable, stores } = readDiagnostics(time)
       const total = Math.max(1, Math.ceil(events.length / CHUNK_SIZE))
       for (let index = 0; index < total; index++) {
         if (!this.active) return
@@ -448,7 +471,7 @@ Page({
         const reply = await getApp()._options.globalData.requestDiagnostic({
           method: DIAGNOSTIC_METHOD,
           params: {
-            time, language: this.settings.language, index, total, unavailable,
+            time, language: this.settings.language, index, total, unavailable, stores,
             events: events.slice(offset, offset + CHUNK_SIZE),
           },
         })

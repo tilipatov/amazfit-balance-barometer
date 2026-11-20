@@ -9,7 +9,7 @@ let pending
 AppSideService(BaseSideService({
   onRequest(request, reply) {
     if (request.method !== DIAGNOSTIC_METHOD) return reply('Unknown method')
-    const { time, language, index, total, events, unavailable } = request.params || {}
+    const { time, language, index, total, events, unavailable, stores } = request.params || {}
     if (!Number.isSafeInteger(time) || !Number.isInteger(index)
       || !Number.isInteger(total) || total < 1 || total > Math.ceil(MAX_EVENTS / CHUNK_SIZE)
       || index < 0 || index >= total || !Array.isArray(events) || events.length > CHUNK_SIZE
@@ -37,6 +37,7 @@ AppSideService(BaseSideService({
           syncedAt: time,
           language: language === 'ru' ? 'ru' : 'en',
           unavailable,
+          stores,
           events: keepDiagnosticEvents([...(previous?.events ?? []), ...received], time),
         })
         this.settings.setItem(DIAGNOSTIC_STORAGE, snapshot)
