@@ -561,7 +561,7 @@ Page({
     const t = this.strings
     const info = getPackageInfo()
     const version = info?.version?.name || info?.app?.version?.name
-      || (typeof info?.version === 'string' ? info.version : '1.1.3')
+      || (typeof info?.version === 'string' ? info.version : '1.1.4')
     this.text(t.about, 66, 51, 348, 45, 31)
     this.menuText(t.appName + '  ·  ' + t.version + ' ' + version,
       80, 0, 320, 28, 21, this.palette.muted, ui.align.CENTER_H)
