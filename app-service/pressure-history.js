@@ -1,5 +1,5 @@
 import { Barometer } from '@zos/sensor'
-import { BACKGROUND, readHistory, readPressure, recordSample } from '../lib/history.js'
+import { BACKGROUND, readPressure, recordSample } from '../lib/history.js'
 
 AppService({
   onInit() {
@@ -9,9 +9,9 @@ AppService({
         console.log('Pressure timer: sensor reading unavailable')
         return
       }
-      const history = readHistory(BACKGROUND)
-      const updated = recordSample(BACKGROUND, history, Date.now(), pressure)
-      if (updated === history) console.log('Pressure timer: no new sample saved')
+      if (!recordSample(BACKGROUND, Date.now(), pressure)) {
+        console.log('Pressure timer: no sample saved')
+      }
     } catch (error) {
       console.log('Pressure timer sample:', String(error))
     }

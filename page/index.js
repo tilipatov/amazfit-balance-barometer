@@ -69,8 +69,8 @@ Page({
     this.reading = null
     this.backgroundStatus = null
     this.screen = 'main'
-    this.foregroundHistory = readHistory(FOREGROUND)
-    this.backgroundHistory = readHistory(BACKGROUND)
+    this.foregroundHistory = readHistory(FOREGROUND) ?? []
+    this.backgroundHistory = readHistory(BACKGROUND) ?? []
     this.historyReadAt = Date.now()
     try {
       this.barometer = new Barometer()
@@ -105,10 +105,10 @@ Page({
     this.now = Date.now()
     this.pressure = readPressure(this.barometer)
     const previous = this.foregroundHistory
-    this.foregroundHistory = recordSample(FOREGROUND, previous, this.now, this.pressure)
+    this.foregroundHistory = recordSample(FOREGROUND, this.now, this.pressure, previous)
     if (this.hasTrends() || this.screen === 'graph') {
       if (this.now < this.historyReadAt || this.now - this.historyReadAt >= MINUTE / 2) {
-        this.backgroundHistory = readHistory(BACKGROUND)
+        this.backgroundHistory = readHistory(BACKGROUND) ?? this.backgroundHistory
         this.historyReadAt = this.now
       }
     }
@@ -129,7 +129,7 @@ Page({
   handleGesture(event) {
     if (event === GESTURE_UP && this.screen === 'main') {
       this.hintVisible = false
-      this.backgroundHistory = readHistory(BACKGROUND)
+      this.backgroundHistory = readHistory(BACKGROUND) ?? this.backgroundHistory
       this.open('graph')
       return true
     }
@@ -400,8 +400,8 @@ Page({
 
   openLog() {
     const now = Date.now()
-    const foreground = trimHistory(readHistory(FOREGROUND), now)
-    const background = trimHistory(readHistory(BACKGROUND), now)
+    const foreground = trimHistory(readHistory(FOREGROUND) ?? this.foregroundHistory, now)
+    const background = trimHistory(readHistory(BACKGROUND) ?? this.backgroundHistory, now)
     this.logEntries = foreground.map(([time, pressure]) => ({ time, pressure, background: false }))
       .concat(background.map(([time, pressure]) => ({ time, pressure, background: true })))
       .sort((left, right) => right.time - left.time)
@@ -561,7 +561,7 @@ Page({
     const t = this.strings
     const info = getPackageInfo()
     const version = info?.version?.name || info?.app?.version?.name
-      || (typeof info?.version === 'string' ? info.version : '1.1.2')
+      || (typeof info?.version === 'string' ? info.version : '1.1.3')
     this.text(t.about, 66, 51, 348, 45, 31)
     this.menuText(t.appName + '  ·  ' + t.version + ' ' + version,
       80, 0, 320, 28, 21, this.palette.muted, ui.align.CENTER_H)
