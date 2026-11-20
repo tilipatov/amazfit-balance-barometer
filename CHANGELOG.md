@@ -1,5 +1,10 @@
 # История изменений
 
+## [1.1.5 Beta 1] — 20 ноября 2026
+
+- Добавлена диагностика запуска фоновых замеров, чтения и записи истории, а также загрузки данных для графика.
+- Журнал диагностики можно передать с часов и просмотреть в настройках барометра в Zepp.
+
 ## [1.1.4] — 20 ноября 2026
 
 - Тренд рассчитывается и по замеру в первые пять минут периода, если более раннего замера нет.
@@ -59,3 +64,5 @@
 [1.0.2]: https://github.com/tilipatov/amazfit-balance-barometer/releases/tag/v1.0.2
 [1.0.1]: https://github.com/tilipatov/amazfit-balance-barometer/releases/tag/v1.0.1
 [1.0.0]: https://github.com/tilipatov/amazfit-balance-barometer/commit/7b0c4a7081076397e43ed61a136822878b41d1ca
+
+[1.1.5 Beta 1]: https://github.com/tilipatov/amazfit-balance-barometer/releases/tag/v1.1.5-beta.1

@@ -1,5 +1,4 @@
 import * as ui from '@zos/ui'
-import { getPackageInfo } from '@zos/app'
 import { Barometer } from '@zos/sensor'
 import { GESTURE_DOWN, GESTURE_RIGHT, GESTURE_UP, KEY_BACK, KEY_EVENT_CLICK, KEY_HOME,
   onDigitalCrown, onGesture, onKey, offDigitalCrown, offGesture, offKey } from '@zos/interaction'
@@ -9,6 +8,8 @@ import { BACKGROUND, FOREGROUND, readHistory, readPressure, recordSample } from 
 import { CHART_COLORS, COLORS, readSettings, saveSettings } from '../lib/watch-data.js'
 import { setBackgroundSampling } from '../lib/sampling.js'
 import { STRINGS } from '../lib/strings.js'
+import { BETA_VERSION, CHUNK_SIZE, DIAGNOSTIC_METHOD } from '../lib/diagnostic-data.js'
+import { readDiagnostics, recordDiagnostic } from '../lib/diagnostics.js'
 
 const PALETTES = {
   dark: {
@@ -68,6 +69,9 @@ Page({
     this.widgets = []
     this.reading = null
     this.backgroundStatus = null
+    this.diagnosticStatus = null
+    this.graphReadStatus = null
+    this.active = true
     this.screen = 'main'
     this.foregroundHistory = readHistory(FOREGROUND) ?? []
     this.backgroundHistory = readHistory(BACKGROUND) ?? []
@@ -90,6 +94,7 @@ Page({
   },
 
   onDestroy() {
+    this.active = false
     clearInterval(this.timer)
     this.stopCrownTracking()
     offDigitalCrown()
@@ -108,7 +113,8 @@ Page({
     this.foregroundHistory = recordSample(FOREGROUND, this.now, this.pressure, previous)
     if (this.hasTrends() || this.screen === 'graph') {
       if (this.now < this.historyReadAt || this.now - this.historyReadAt >= MINUTE / 2) {
-        this.backgroundHistory = readHistory(BACKGROUND) ?? this.backgroundHistory
+        if (this.screen === 'graph') this.refreshGraphHistory(false)
+        else this.backgroundHistory = readHistory(BACKGROUND) ?? this.backgroundHistory
         this.historyReadAt = this.now
       }
     }
@@ -129,12 +135,31 @@ Page({
   handleGesture(event) {
     if (event === GESTURE_UP && this.screen === 'main') {
       this.hintVisible = false
-      this.backgroundHistory = readHistory(BACKGROUND) ?? this.backgroundHistory
+      this.refreshGraphHistory(true)
       this.open('graph')
       return true
     }
     if (event === GESTURE_DOWN && this.screen === 'graph') return this.goBack()
     return event === GESTURE_RIGHT && this.goBack()
+  },
+
+  refreshGraphHistory(opening) {
+    let history
+    const previousCount = this.backgroundHistory.length
+    this.backgroundHistory = readHistory(BACKGROUND, details => { history = details }) ?? this.backgroundHistory
+    const statusChanged = this.graphReadStatus !== history.status
+    this.graphReadStatus = history.status
+    if (opening || statusChanged || this.backgroundHistory.length < previousCount) {
+      const now = Date.now()
+      const period = this.settings.chartMinutes
+      const { points } = makeChart(this.foregroundHistory.concat(this.backgroundHistory), now, period, this.settings.unit)
+      recordDiagnostic({
+        time: now, kind: 'graph', opening, history, period,
+        visible: points.length, foreground: this.foregroundHistory.length,
+        cached: this.backgroundHistory.length, previous: previousCount,
+        trendEnabled: this.hasTrends(), timerRegistered: this.backgroundReady,
+      })
+    }
   },
 
   goBack() {
@@ -307,6 +332,7 @@ Page({
       case 'trend': this.renderTrend(); break
       case 'period': this.renderPeriod(); break
       case 'log': this.renderLog(); break
+      case 'diagnostics': this.renderDiagnostics(); break
       case 'graph': this.renderGraph(); break
       case 'theme': this.renderTheme(); break
       case 'chartSettings': this.renderChartSettings(); break
@@ -393,9 +419,49 @@ Page({
       })),
       { label: t.chart, icon: 'chart', action: () => this.open('chartSettings') },
       { label: t.log, icon: 'log', action: () => this.openLog() },
+      { label: t.diagnostics, icon: 'log', action: () => this.open('diagnostics') },
       { label: t.help, icon: 'help', action: () => this.open('help') },
       { label: t.about, icon: 'about', action: () => this.open('about') },
     ])
+  },
+
+  renderDiagnostics() {
+    const t = this.strings
+    this.menuList(t.diagnostics, [{
+      label: t.diagnosticSend, icon: 'log', action: () => this.sendDiagnostics(),
+    }])
+    this.menuText(this.diagnosticStatus ? t[this.diagnosticStatus] : t.diagnosticHelp,
+      82, 110, 316, 120, 22, this.palette.muted, ui.align.LEFT, true)
+  },
+
+  async sendDiagnostics() {
+    if (this.diagnosticStatus === 'diagnosticSending') return
+    this.diagnosticStatus = 'diagnosticSending'
+    this.render()
+    try {
+      const time = Date.now()
+      const { events, unavailable } = readDiagnostics(time)
+      const total = Math.max(1, Math.ceil(events.length / CHUNK_SIZE))
+      for (let index = 0; index < total; index++) {
+        if (!this.active) return
+        const offset = index * CHUNK_SIZE
+        const reply = await getApp()._options.globalData.requestDiagnostic({
+          method: DIAGNOSTIC_METHOD,
+          params: {
+            time, language: this.settings.language, index, total, unavailable,
+            events: events.slice(offset, offset + CHUNK_SIZE),
+          },
+        })
+        if (reply?.index !== index || reply?.complete !== (index === total - 1)) {
+          throw new Error('Unexpected diagnostic reply')
+        }
+      }
+      this.diagnosticStatus = unavailable.length ? 'diagnosticPartial' : 'diagnosticSent'
+    } catch (error) {
+      console.log('Diagnostic transfer:', String(error))
+      this.diagnosticStatus = 'diagnosticFailed'
+    }
+    if (this.active && this.screen === 'diagnostics') this.render()
   },
 
   openLog() {
@@ -559,11 +625,8 @@ Page({
 
   renderAbout() {
     const t = this.strings
-    const info = getPackageInfo()
-    const version = info?.version?.name || info?.app?.version?.name
-      || (typeof info?.version === 'string' ? info.version : '1.1.4')
     this.text(t.about, 66, 51, 348, 45, 31)
-    this.menuText(t.appName + '  ·  ' + t.version + ' ' + version,
+    this.menuText(BETA_VERSION + ' · ' + t.diagnostics,
       80, 0, 320, 28, 21, this.palette.muted, ui.align.CENTER_H)
     this.menuText(TELEGRAM_CHANNEL, 80, 29, 320, 28, 22, this.palette.text, ui.align.CENTER_H)
     this.menu.createWidget(ui.widget.IMG, { x: 128, y: 62, src: 'telegram-qr.png' })
