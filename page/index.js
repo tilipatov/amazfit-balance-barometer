@@ -8,7 +8,7 @@ import { BACKGROUND, FOREGROUND, readHistory, readPressure, recordSample } from 
 import { CHART_COLORS, COLORS, readSettings, saveSettings } from '../lib/watch-data.js'
 import { setBackgroundSampling } from '../lib/sampling.js'
 import { STRINGS } from '../lib/strings.js'
-import { BETA_VERSION, CHUNK_SIZE, DIAGNOSTIC_METHOD } from '../lib/diagnostic-data.js'
+import { APP_VERSION, CHUNK_SIZE, DIAGNOSTIC_METHOD } from '../lib/diagnostic-data.js'
 import { readDiagnostics, recordDiagnostic } from '../lib/diagnostics.js'
 
 const PALETTES = {
@@ -43,6 +43,12 @@ const PARENTS = {
 }
 
 const twoDigits = value => ('0' + value).slice(-2)
+
+// UI delays expire if the watch clock moves behind the start of the delay.
+function remainingDelay(start, duration) {
+  const elapsed = Date.now() - start
+  return elapsed >= 0 ? Math.max(0, duration - elapsed) : 0
+}
 
 function formatTime(time) {
   const date = new Date(time)
@@ -80,7 +86,7 @@ Page({
     this.backgroundReady = null
     this.work = new Map()
     this.workTimer = undefined
-    this.uiBusyUntil = Date.now() + NAVIGATION_DELAY
+    this.pauseForInteraction(NAVIGATION_DELAY)
     try {
       this.barometer = new Barometer()
     } catch (error) {
@@ -133,13 +139,18 @@ Page({
     this.scheduleWork()
   },
 
+  pauseForInteraction(duration) {
+    this.interactionAt = Date.now()
+    this.interactionDelay = duration
+  },
+
   scheduleWork() {
     if (!this.active || !this.work.size || this.workTimer !== undefined) return
-    const delay = Math.max(WORK_SPACING, this.uiBusyUntil - Date.now())
+    const delay = Math.max(WORK_SPACING, remainingDelay(this.interactionAt, this.interactionDelay))
     this.workTimer = setTimeout(() => {
       this.workTimer = undefined
       if (!this.active || !this.work.size) return
-      if (Date.now() >= this.uiBusyUntil) {
+      if (remainingDelay(this.interactionAt, this.interactionDelay) === 0) {
         const [key, task] = this.work.entries().next().value
         this.work.delete(key)
         try {
@@ -163,7 +174,7 @@ Page({
   },
 
   measure() {
-    if (Date.now() < this.uiBusyUntil) return
+    if (remainingDelay(this.interactionAt, this.interactionDelay) > 0) return
     this.now = Date.now()
     this.readingAt = this.now
     this.pressure = readPressure(this.barometer)
@@ -183,7 +194,7 @@ Page({
   },
 
   open(screen) {
-    this.uiBusyUntil = Date.now() + NAVIGATION_DELAY
+    this.pauseForInteraction(NAVIGATION_DELAY)
     this.screen = screen
     if (screen === 'graph') {
       this.now = Date.now()
@@ -346,7 +357,7 @@ Page({
     if (!Number.isFinite(value)) return
     const offset = Math.abs(value)
     if (offset === this.menuOffset) return
-    if (this.menuOffset !== undefined) this.uiBusyUntil = Date.now() + SCROLL_QUIET_TIME
+    if (this.menuOffset !== undefined) this.pauseForInteraction(SCROLL_QUIET_TIME)
     this.menuOffset = offset
     this.layoutMenuRows(offset)
   },
@@ -374,8 +385,8 @@ Page({
   },
 
   trackCrownScroll() {
-    this.crownScrollDeadline = Date.now() + CROWN_SCROLL_TIMEOUT
-    this.uiBusyUntil = Date.now() + SCROLL_QUIET_TIME
+    this.crownScrollAt = Date.now()
+    this.pauseForInteraction(SCROLL_QUIET_TIME)
     if (this.crownTracker !== undefined) return
     const menu = this.menu
     // Some firmware scrolls the view with the crown without sending scroll_frame_func.
@@ -386,7 +397,7 @@ Page({
       }
       const offset = ui.prop.POS_Y === undefined ? undefined : menu.getProperty(ui.prop.POS_Y)
       this.updateMenuOffset(Number.isFinite(offset) ? offset : menu.getProperty(ui.prop.MORE, {})?.pos_y)
-      if (Date.now() >= this.crownScrollDeadline) this.stopCrownTracking()
+      if (remainingDelay(this.crownScrollAt, CROWN_SCROLL_TIMEOUT) === 0) this.stopCrownTracking()
     }, 32)
   },
 
@@ -763,7 +774,7 @@ Page({
   renderAbout() {
     const t = this.strings
     this.text(t.about, 66, 51, 348, 45, 31)
-    this.menuText(BETA_VERSION + ' · ' + t.diagnostics,
+    this.menuText(APP_VERSION + ' · ' + t.diagnostics,
       80, 0, 320, 28, 21, this.palette.muted, ui.align.CENTER_H)
     this.menuText(TELEGRAM_CHANNEL, 80, 29, 320, 28, 22, this.palette.text, ui.align.CENTER_H)
     this.menu.createWidget(ui.widget.IMG, { x: 128, y: 62, src: 'telegram-qr.png' })

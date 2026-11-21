@@ -1,13 +1,13 @@
 {
   "configVersion": "v3",
   "app": {
-    "appId": 3198607,
+    "appId": 1137488,
     "appName": "Barometer",
     "appType": "app",
-    "version": { "code": 12, "name": "1.1.5" },
+    "version": { "code": 13, "name": "1.1.5" },
     "icon": "icon.png",
     "vender": "Balance Barometer",
-    "description": "Barometer 1.1.5 Beta 3 - diagnostics"
+    "description": "Barometer 1.1.5 for Amazfit Balance"
   },
   "permissions": ["device:os.barometer", "device:os.alarm", "device:os.bg_service", "device:os.local_storage"],
   "runtime": {

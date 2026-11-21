@@ -1,4 +1,4 @@
-import { BETA_VERSION, DIAGNOSTIC_STORAGE, readDiagnosticSnapshot } from '../lib/diagnostic-data.js'
+import { APP_VERSION, DIAGNOSTIC_STORAGE, readDiagnosticSnapshot } from '../lib/diagnostic-data.js'
 
 const PAGE_SIZE = 40
 const PAGE_KEY = 'barometer-diagnostics-page'
@@ -140,7 +140,7 @@ AppSettingsPage({
     if (!snapshot) {
       return View({ style: { padding: '12px' } }, [
         Section({ title: 'Барометр · Диагностика / Barometer · Diagnostics' }, [
-          line(BETA_VERSION, true),
+          line(APP_VERSION, true),
           line('На часах: Настройки → Диагностика → Передать журнал в Zepp.'),
           line('On the watch: Settings → Diagnostics → Send log to Zepp.'),
         ]),
@@ -153,7 +153,7 @@ AppSettingsPage({
     const limit = page * PAGE_SIZE
     const sections = [
       Section({ title: t.title }, [
-        line(BETA_VERSION, true),
+        line(APP_VERSION, true),
         line(t.synced + ': ' + showTime(snapshot.syncedAt)),
       ]),
     ]
