@@ -8,8 +8,6 @@ import { BACKGROUND, FOREGROUND, readHistory, readPressure, recordSample } from 
 import { CHART_COLORS, COLORS, readSettings, saveSettings } from '../lib/watch-data.js'
 import { setBackgroundSampling } from '../lib/sampling.js'
 import { STRINGS } from '../lib/strings.js'
-import { APP_VERSION, CHUNK_SIZE, DIAGNOSTIC_METHOD } from '../lib/diagnostic-data.js'
-import { readDiagnostics, recordDiagnostic } from '../lib/diagnostics.js'
 
 const PALETTES = {
   dark: {
@@ -39,7 +37,6 @@ const WORK_SPACING = 60
 const PARENTS = {
   settings: 'main', graph: 'main', colors: 'appearance', theme: 'appearance', period: 'trend',
   chartPeriod: 'chartSettings', chartColors: 'chartSettings',
-  diagnosticPeriod: 'diagnostics',
 }
 
 const twoDigits = value => ('0' + value).slice(-2)
@@ -75,8 +72,6 @@ Page({
     this.widgets = []
     this.reading = null
     this.backgroundStatus = null
-    this.diagnosticStatus = null
-    this.graphReadStatus = null
     this.graphOpening = false
     this.active = true
     this.screen = 'main'
@@ -109,8 +104,8 @@ Page({
       this.queueSample()
     })
     this.queueWork('alarm', () => {
-      this.backgroundReady = setBackgroundSampling(this.hasTrends(), this.settings.diagnosticMinutes)
-      if (this.screen === 'trend' || this.screen === 'diagnostics') this.render()
+      this.backgroundReady = setBackgroundSampling(this.hasTrends())
+      if (this.screen === 'trend') this.render()
     })
     this.queueBackgroundRefresh()
     if (this.hintVisible) {
@@ -232,9 +227,8 @@ Page({
   },
 
   refreshBackgroundHistory() {
-    let history
     const previous = this.backgroundHistory
-    const updated = readHistory(BACKGROUND, details => { history = details }) ?? previous
+    const updated = readHistory(BACKGROUND) ?? previous
     const changed = updated.length !== previous.length
       || updated.some(([time, pressure], index) => time !== previous[index][0] || pressure !== previous[index][1])
     if (changed) this.backgroundHistory = updated
@@ -246,26 +240,8 @@ Page({
 
     const opening = this.graphOpening
     this.graphOpening = false
-    const status = history.status + ':' + history.slots.join(',')
-    const statusChanged = this.graphReadStatus !== status
-    this.graphReadStatus = status
     this.now = this.historyReadAt
     if (opening || changed) this.render()
-    if (opening || statusChanged || this.backgroundHistory.length < previous.length) {
-      const now = this.now
-      const period = this.settings.chartMinutes
-      const start = now - period * MINUTE
-      const visible = this.foregroundHistory.concat(this.backgroundHistory)
-        .filter(([time]) => time >= start && time <= now).length
-      const event = {
-        time: now, kind: 'graph', opening, history, period,
-        visible, foreground: this.foregroundHistory.length,
-        cached: this.backgroundHistory.length, previous: previous.length,
-        trendEnabled: this.hasTrends(), timerRegistered: this.backgroundReady,
-        interval: this.settings.diagnosticMinutes,
-      }
-      this.queueWork(Symbol(), () => recordDiagnostic(event))
-    }
   },
 
   goBack() {
@@ -285,7 +261,7 @@ Page({
     this.settings.trends[this.trendIndex][field] = value
     saveSettings(this.settings)
     if (hadTrends !== this.hasTrends() || (field === 'enabled' && value && !this.backgroundReady)) {
-      this.backgroundReady = setBackgroundSampling(this.hasTrends(), this.settings.diagnosticMinutes)
+      this.backgroundReady = setBackgroundSampling(this.hasTrends())
     }
     this.measure()
     this.render()
@@ -440,8 +416,6 @@ Page({
       case 'trend': this.renderTrend(); break
       case 'period': this.renderPeriod(); break
       case 'log': this.renderLog(); break
-      case 'diagnostics': this.renderDiagnostics(); break
-      case 'diagnosticPeriod': this.renderDiagnosticPeriod(); break
       case 'graph': this.renderGraph(); break
       case 'theme': this.renderTheme(); break
       case 'chartSettings': this.renderChartSettings(); break
@@ -528,72 +502,9 @@ Page({
       })),
       { label: t.chart, icon: 'chart', action: () => this.open('chartSettings') },
       { label: t.log, icon: 'log', action: () => this.openLog() },
-      { label: t.diagnostics, icon: 'log', action: () => this.open('diagnostics') },
       { label: t.help, icon: 'help', action: () => this.open('help') },
       { label: t.about, icon: 'about', action: () => this.open('about') },
     ])
-  },
-
-  renderDiagnostics() {
-    const t = this.strings
-    const interval = formatPeriod(this.settings.diagnosticMinutes, this.settings.language)
-    this.menuList(t.diagnostics, [
-      { label: t.diagnosticSend, icon: 'log', action: () => this.sendDiagnostics() },
-      {
-        label: t.diagnosticPeriod,
-        detail: this.hasTrends() && this.backgroundReady === false ? interval + ' · ' + t.diagnosticTimerFailed : interval,
-        action: () => this.open('diagnosticPeriod'),
-      },
-    ])
-    this.menuText(this.diagnosticStatus ? t[this.diagnosticStatus] : t.diagnosticHelp,
-      82, 192, 316, 100, 22, this.palette.muted, ui.align.LEFT, true)
-  },
-
-  renderDiagnosticPeriod() {
-    this.menuList(this.strings.diagnosticPeriod, [5, 10].map(minutes => ({
-      label: formatPeriod(minutes, this.settings.language),
-      selected: this.settings.diagnosticMinutes === minutes,
-      action: () => {
-        this.settings.diagnosticMinutes = minutes
-        saveSettings(this.settings)
-        this.backgroundReady = setBackgroundSampling(this.hasTrends(), minutes)
-        this.open('diagnostics')
-      },
-    })))
-  },
-
-  sendDiagnostics() {
-    if (this.diagnosticStatus === 'diagnosticSending') return
-    this.diagnosticStatus = 'diagnosticSending'
-    this.render()
-    this.queueWork('send-diagnostics', () => this.transferDiagnostics())
-  },
-
-  async transferDiagnostics() {
-    try {
-      const time = Date.now()
-      const { events, unavailable, stores } = readDiagnostics(time)
-      const total = Math.max(1, Math.ceil(events.length / CHUNK_SIZE))
-      for (let index = 0; index < total; index++) {
-        if (!this.active) return
-        const offset = index * CHUNK_SIZE
-        const reply = await getApp()._options.globalData.requestDiagnostic({
-          method: DIAGNOSTIC_METHOD,
-          params: {
-            time, language: this.settings.language, index, total, unavailable, stores,
-            events: events.slice(offset, offset + CHUNK_SIZE),
-          },
-        })
-        if (reply?.index !== index || reply?.complete !== (index === total - 1)) {
-          throw new Error('Unexpected diagnostic reply')
-        }
-      }
-      this.diagnosticStatus = unavailable.length ? 'diagnosticPartial' : 'diagnosticSent'
-    } catch (error) {
-      console.log('Diagnostic transfer:', String(error))
-      this.diagnosticStatus = 'diagnosticFailed'
-    }
-    if (this.active && this.screen === 'diagnostics') this.render()
   },
 
   openLog() {
@@ -774,7 +685,7 @@ Page({
   renderAbout() {
     const t = this.strings
     this.text(t.about, 66, 51, 348, 45, 31)
-    this.menuText(APP_VERSION + ' · ' + t.diagnostics,
+    this.menuText('1.1.6',
       80, 0, 320, 28, 21, this.palette.muted, ui.align.CENTER_H)
     this.menuText(TELEGRAM_CHANNEL, 80, 29, 320, 28, 22, this.palette.text, ui.align.CENTER_H)
     this.menu.createWidget(ui.widget.IMG, { x: 128, y: 62, src: 'telegram-qr.png' })

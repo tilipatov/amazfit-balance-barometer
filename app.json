@@ -4,10 +4,10 @@
     "appId": 1137488,
     "appName": "Barometer",
     "appType": "app",
-    "version": { "code": 13, "name": "1.1.5" },
+    "version": { "code": 14, "name": "1.1.6" },
     "icon": "icon.png",
     "vender": "Balance Barometer",
-    "description": "Barometer 1.1.5 for Amazfit Balance"
+    "description": "Barometer 1.1.6 for Amazfit Balance"
   },
   "permissions": ["device:os.barometer", "device:os.alarm", "device:os.bg_service", "device:os.local_storage"],
   "runtime": {
@@ -17,8 +17,6 @@
     "balance": {
       "module": {
         "page": { "pages": ["page/index"] },
-        "app-side": { "path": "app-side/index" },
-        "setting": { "path": "setting/index" },
         "app-service": { "services": ["app-service/pressure-history"] }
       },
       "platforms": [
