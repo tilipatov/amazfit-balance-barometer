@@ -2,12 +2,12 @@
   "configVersion": "v3",
   "app": {
     "appId": 1137488,
-    "appName": "Barometer",
+    "appName": "Barometer+",
     "appType": "app",
     "version": { "code": 14, "name": "1.1.6" },
     "icon": "icon.png",
     "vender": "Balance Barometer",
-    "description": "Barometer 1.1.6 for Amazfit Balance"
+    "description": "Barometer+ 1.1.6 for Amazfit Balance"
   },
   "permissions": ["device:os.barometer", "device:os.alarm", "device:os.bg_service", "device:os.local_storage"],
   "runtime": {
@@ -28,8 +28,8 @@
     }
   },
   "i18n": {
-    "en-US": { "appName": "Barometer" },
-    "ru-RU": { "appName": "Барометр" }
+    "en-US": { "appName": "Barometer+" },
+    "ru-RU": { "appName": "Барометр+" }
   },
   "defaultLanguage": "en-US"
 }
