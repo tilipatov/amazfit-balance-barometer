@@ -32,7 +32,7 @@ function control() {
 
 function report() {
   const now = new Date()
-  const lines = ['Тест 3 · ' + [now.getHours(), now.getMinutes(), now.getSeconds()].map(n => ('0'+n).slice(-2)).join(':'),
+  const lines = ['Тест 4 · ' + [now.getHours(), now.getMinutes(), now.getSeconds()].map(n => ('0'+n).slice(-2)).join(':'),
     'Контроль Float32: ' + control()]
   const id = router.SYSTEM_APP_ALTIMETER
   if (!Number.isInteger(id)) return lines.concat('ID барометра недоступен').join('\n')
@@ -64,11 +64,11 @@ function report() {
 Page({
   build() {
     const output = ui.createWidget(ui.widget.TEXT, {
-      x: 65, y: 74, w: 350, h: 222, text_size: 17, color: 0xffffff,
-      text_style: ui.text_style.WRAP, text: 'Тест 3 · выберите журнал',
+      x: 65, y: 74, w: 350, h: 204, text_size: 17, color: 0xffffff,
+      text_style: ui.text_style.WRAP, text: 'Тест 4 · выберите журнал',
     })
     ui.createWidget(ui.widget.BUTTON, {
-      x: 70, y: 298, w: 340, h: 54, radius: 24, text_size: 20,
+      x: 70, y: 285, w: 340, h: 45, radius: 24, text_size: 20,
       text: 'Журнал Барометра+', normal_color: 0x246587, press_color: 0x19475e,
       click_func: () => {
         try {
@@ -80,9 +80,14 @@ Page({
       },
     })
     ui.createWidget(ui.widget.BUTTON, {
-      x: 93, y: 358, w: 294, h: 48, radius: 24, text_size: 20,
+      x: 90, y: 337, w: 300, h: 43, radius: 24, text_size: 20,
       text: 'Проверить штатную историю', normal_color: 0x246587, press_color: 0x19475e,
       click_func: () => output.setProperty(ui.prop.TEXT, report()),
+    })
+    ui.createWidget(ui.widget.BUTTON, {
+      x: 107, y: 387, w: 266, h: 42, radius: 21, text_size: 19,
+      text: 'Каталог барометра', normal_color: 0x246587, press_color: 0x19475e,
+      click_func: () => router.push({ url: 'page/catalog' }),
     })
   },
 })

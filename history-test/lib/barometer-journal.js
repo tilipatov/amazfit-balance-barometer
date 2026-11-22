@@ -47,7 +47,7 @@ function readStream(fs, path) {
 }
 
 export function journalReport(fs, now) {
-  const lines = ['Тест 3 · журнал Барометра+']
+  const lines = ['Тест 4 · журнал Барометра+']
   let last
   for (const [name, path] of [['В приложении', 'pressure-open.json'], ['Фон', 'pressure-background.json']]) {
     const stream = readStream(fs, path)
