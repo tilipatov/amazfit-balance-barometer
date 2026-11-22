@@ -1,3 +1,4 @@
+import { journalReport } from '../lib/barometer-journal.js'
 import * as ui from '@zos/ui'
 import * as router from '@zos/router'
 import * as share from '@zos/share-storage'
@@ -31,7 +32,7 @@ function control() {
 
 function report() {
   const now = new Date()
-  const lines = ['Тест 2 · ' + [now.getHours(), now.getMinutes(), now.getSeconds()].map(n => ('0'+n).slice(-2)).join(':'),
+  const lines = ['Тест 3 · ' + [now.getHours(), now.getMinutes(), now.getSeconds()].map(n => ('0'+n).slice(-2)).join(':'),
     'Контроль Float32: ' + control()]
   const id = router.SYSTEM_APP_ALTIMETER
   if (!Number.isInteger(id)) return lines.concat('ID барометра недоступен').join('\n')
@@ -63,11 +64,23 @@ function report() {
 Page({
   build() {
     const output = ui.createWidget(ui.widget.TEXT, {
-      x: 65, y: 84, w: 350, h: 250, text_size: 17, color: 0xffffff,
-      text_style: ui.text_style.WRAP, text: 'Тест 2 · штатная история давления',
+      x: 65, y: 74, w: 350, h: 222, text_size: 17, color: 0xffffff,
+      text_style: ui.text_style.WRAP, text: 'Тест 3 · выберите журнал',
     })
     ui.createWidget(ui.widget.BUTTON, {
-      x: 70, y: 332, w: 340, h: 58, radius: 24, text_size: 20,
+      x: 70, y: 298, w: 340, h: 54, radius: 24, text_size: 20,
+      text: 'Журнал Барометра+', normal_color: 0x246587, press_color: 0x19475e,
+      click_func: () => {
+        try {
+          const fs = new share.FileSystem(1137488)
+          output.setProperty(ui.prop.TEXT, journalReport(fs, Date.now()))
+        } catch (error) {
+          output.setProperty(ui.prop.TEXT, 'Барометр+ · ' + String(error))
+        }
+      },
+    })
+    ui.createWidget(ui.widget.BUTTON, {
+      x: 93, y: 358, w: 294, h: 48, radius: 24, text_size: 20,
       text: 'Проверить штатную историю', normal_color: 0x246587, press_color: 0x19475e,
       click_func: () => output.setProperty(ui.prop.TEXT, report()),
     })
